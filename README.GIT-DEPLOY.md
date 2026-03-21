@@ -66,3 +66,19 @@ These folders should be kept when you update:
 - `.env`
 
 The workspace state, login credentials, upload index, and music library metadata are kept outside the image through Docker volumes.
+
+## 5. Compose-only deployment for fnOS / NAS UI
+
+If you want to create the project from a single Compose file in the NAS web UI, use:
+
+```text
+docker-compose.ghcr.yml
+```
+
+This file pulls the published image directly from GHCR:
+
+```text
+ghcr.io/ysur007/neon-pulse-nav:latest
+```
+
+In that mode, the NAS does not need the source code or Dockerfile locally.
