@@ -1,0 +1,20 @@
+services:
+  neon-pulse-nav:
+    container_name: neon-pulse-nav
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: neon-pulse-nav:latest
+    restart: unless-stopped
+    ports:
+      - "${NAV_PORT:-8080}:3000"
+    environment:
+      DATA_DIR: /app/data
+      NAS_TRANSFER_DIR: /app/nas/transfer
+      NAS_MUSIC_DIR: /app/nas/music
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+    volumes:
+      - ./data:/app/data
+      - ${NAS_TRANSFER_MOUNT:-./nas/transfer}:/app/nas/transfer
+      - ${NAS_MUSIC_MOUNT:-./nas/music}:/app/nas/music
+      - ${DOCKER_SOCKET_MOUNT:-/var/run/docker.sock}:/var/run/docker.sock
