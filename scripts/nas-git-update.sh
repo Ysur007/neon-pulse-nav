@@ -19,7 +19,7 @@ if [ ! -d ".git" ]; then
 fi
 
 echo "Pulling latest source..."
-git pull --ff-only
+git -c http.version=HTTP/1.1 pull --ff-only
 
 mkdir -p data nas/transfer nas/music
 
