@@ -162,6 +162,7 @@
         @pause="handleAudioPause"
         @timeupdate="handleAudioTimeUpdate"
         @loadedmetadata="handleAudioMetadata"
+        @error="handleAudioError"
         @ended="handleAudioEnded"
       ></audio>
 
@@ -262,6 +263,7 @@ const PLAYBACK_ORDER_OPTIONS = [
   { key: "shuffle", label: "随机", glyph: "R", hint: "随机播放" },
 ];
 
+const PLAY_RETRY_DELAY_MS = 350;
 const audioRef = ref(null);
 const musicBayRef = ref(null);
 const musicIslandCardRef = ref(null);
@@ -384,6 +386,38 @@ function handleAudioPlay() { syncAudioStateFromElement(); }
 function handleAudioPause() { syncAudioStateFromElement(); }
 function handleAudioTimeUpdate() { syncAudioStateFromElement(); }
 function handleAudioMetadata() { syncAudioStateFromElement(); }
+function handleAudioError() { syncAudioStateFromElement(); }
+function wait(ms) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+async function playAudioElement({ forceReload = false, retries = 1, suppressError = false } = {}) {
+  const element = audioRef.value;
+  if (!(element instanceof HTMLAudioElement)) return false;
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    if (forceReload || attempt > 0) {
+      element.load();
+    }
+
+    try {
+      await element.play();
+      syncAudioStateFromElement();
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries - 1) {
+        await wait(PLAY_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  syncAudioStateFromElement();
+  if (!suppressError && activeTrack.value) {
+    notify(lastError?.message || "褰撳墠姝屾洸鏆傛椂鏃犳硶鎾斁", "error");
+  }
+
+  return false;
+}
 function cyclePlaybackOrder() {
   const currentIndex = PLAYBACK_ORDER_OPTIONS.findIndex((item) => item.key === playbackOrder.value);
   const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % PLAYBACK_ORDER_OPTIONS.length : 0;
@@ -468,7 +502,7 @@ async function toggleIslandPlayback() {
   const element = audioRef.value;
   if (!(element instanceof HTMLAudioElement)) return;
   if (element.paused) {
-    await element.play().catch(() => {});
+    await playAudioElement({ forceReload: Boolean(element.error), retries: 2 });
     return;
   }
   element.pause();
@@ -480,10 +514,13 @@ function focusMusicBay() {
 }
 
 async function playTrack(trackId) {
+  const trackChanged = activeTrackId.value !== trackId;
   activeTrackId.value = trackId;
   await nextTick();
-  await audioRef.value?.play().catch(() => {});
-  syncAudioStateFromElement();
+  await playAudioElement({
+    forceReload: true,
+    retries: trackChanged ? 3 : 2,
+  });
 }
 
 async function switchTrack(step) {
@@ -565,8 +602,11 @@ async function hydrate(options = {}) {
   await nextTick();
   syncAudioStateFromElement();
   if (autoplay && activeTrackId.value) {
-    await audioRef.value?.play().catch(() => {});
-    syncAudioStateFromElement();
+    await playAudioElement({
+      forceReload: true,
+      retries: 3,
+      suppressError: true,
+    });
   }
 }
 

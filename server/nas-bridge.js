@@ -617,7 +617,9 @@ export class NasBridge {
             : null,
           size: stats.size,
           updatedAt: stats.mtimeMs,
-          streamUrl: `/api/nas/music/stream/${encodeRelativeId(relativePath)}`,
+          streamUrl: `/api/nas/music/stream/${encodeRelativeId(relativePath)}?v=${Math.floor(
+            stats.mtimeMs
+          )}`,
         });
       }
 
