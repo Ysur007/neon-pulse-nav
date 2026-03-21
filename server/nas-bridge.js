@@ -5,14 +5,27 @@ import { randomUUID } from "node:crypto";
 import Docker from "dockerode";
 import { parseFile } from "music-metadata";
 
-const AUDIO_EXTENSIONS = new Set([".mp3", ".flac", ".wav", ".m4a", ".ogg", ".aac"]);
+const AUDIO_EXTENSIONS = new Set([
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".mpga",
+  ".ogg",
+  ".opus",
+  ".wav",
+  ".weba",
+]);
 const MIME_BY_EXTENSION = {
   ".aac": "audio/aac",
   ".flac": "audio/flac",
   ".m4a": "audio/mp4",
   ".mp3": "audio/mpeg",
+  ".mpga": "audio/mpeg",
   ".ogg": "audio/ogg",
+  ".opus": "audio/ogg",
   ".wav": "audio/wav",
+  ".weba": "audio/webm",
 };
 const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024;
 const MUSIC_CACHE_TTL = 15_000;
@@ -58,6 +71,17 @@ function formatTransferItem(item) {
     createdAt: item.createdAt,
     downloadUrl: `/api/nas/transfer/files/${item.id}`,
   };
+}
+
+function normalizeRelativePath(rootDir, targetPath) {
+  const fullPath = path.resolve(rootDir, targetPath);
+  const relativePath = path.relative(rootDir, fullPath);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  return relativePath;
 }
 
 function sanitizeMessageBody(body) {
@@ -150,10 +174,12 @@ export class NasBridge {
     );
     this.musicDir = path.resolve(process.env.NAS_MUSIC_DIR || path.join(this.bridgeDir, "music"));
     this.transferIndexFile = path.join(this.bridgeDir, "transfer-index.json");
+    this.musicIndexFile = path.join(this.bridgeDir, "music-index.json");
     this.messageBoardFile = path.join(this.bridgeDir, "transfer-messages.json");
     this.uploadSessionDir = path.join(this.bridgeDir, "upload-sessions");
     this.dockerSocketPath = process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock";
     this.transferIndex = { items: [] };
+    this.musicIndex = { items: [] };
     this.messageBoard = { messages: [] };
     this.musicCache = {
       expiresAt: 0,
@@ -178,9 +204,12 @@ export class NasBridge {
 
     this.transferIndex = await readJson(this.transferIndexFile, { items: [] });
     this.transferIndex.items = ensureArray(this.transferIndex.items);
+    this.musicIndex = await readJson(this.musicIndexFile, { items: [] });
+    this.musicIndex.items = ensureArray(this.musicIndex.items);
     this.messageBoard = await readJson(this.messageBoardFile, { messages: [] });
     this.messageBoard.messages = ensureArray(this.messageBoard.messages);
     await this.persistTransferIndex();
+    await this.persistMusicIndex();
     await this.persistMessageBoard();
     await this.cleanupExpiredUploadSessions();
   }
@@ -188,6 +217,14 @@ export class NasBridge {
   async persistTransferIndex() {
     await writeJson(this.transferIndexFile, {
       items: this.transferIndex.items
+        .slice()
+        .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)),
+    });
+  }
+
+  async persistMusicIndex() {
+    await writeJson(this.musicIndexFile, {
+      items: this.musicIndex.items
         .slice()
         .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)),
     });
@@ -256,6 +293,42 @@ export class NasBridge {
       .slice()
       .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
       .slice(0, limit);
+  }
+
+  upsertMusicIndexItem(item) {
+    const relativePath = normalizeRelativePath(
+      this.musicDir,
+      item.relativePath || item.storedName || ""
+    );
+
+    if (!relativePath) {
+      return;
+    }
+
+    this.musicIndex.items = [
+      {
+        relativePath,
+        originalName: item.originalName || path.basename(relativePath),
+        mime: item.mime || getSafeMimeType(relativePath),
+        size: item.size ?? 0,
+        createdAt: item.createdAt ?? Date.now(),
+      },
+      ...this.musicIndex.items.filter((entry) => entry.relativePath !== relativePath),
+    ].slice(0, 1000);
+  }
+
+  removeMusicIndexItem(relativePath) {
+    const normalizedPath = normalizeRelativePath(this.musicDir, relativePath);
+
+    if (!normalizedPath) {
+      return false;
+    }
+
+    const previousLength = this.musicIndex.items.length;
+    this.musicIndex.items = this.musicIndex.items.filter(
+      (entry) => entry.relativePath !== normalizedPath
+    );
+    return this.musicIndex.items.length !== previousLength;
   }
 
   async addMessage({ body, author }) {
@@ -400,6 +473,14 @@ export class NasBridge {
     };
 
     if (session.target === "music") {
+      this.upsertMusicIndexItem({
+        relativePath: targetName,
+        originalName: session.fileName,
+        mime: item.mime,
+        size: item.size,
+        createdAt: item.createdAt,
+      });
+      await this.persistMusicIndex();
       this.invalidateMusicCache();
     } else {
       this.transferIndex.items = [item, ...this.transferIndex.items].slice(0, 200);
@@ -477,23 +558,54 @@ export class NasBridge {
     const cacheVersion = this.musicCacheVersion;
     const scanPromise = (async () => {
       const filePaths = await walkDirectory(this.musicDir, []);
-      const trackPaths = filePaths.filter((filePath) =>
-        AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+      const indexedEntries = new Map(
+        this.musicIndex.items
+          .map((item) => {
+            const relativePath = normalizeRelativePath(
+              this.musicDir,
+              item.relativePath || item.storedName || ""
+            );
+            return relativePath ? [relativePath, item] : null;
+          })
+          .filter(Boolean)
       );
+      const trackPathSet = new Set(
+        filePaths
+          .filter((filePath) => AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase()))
+          .map((filePath) => normalizeRelativePath(this.musicDir, filePath))
+          .filter(Boolean)
+      );
+      for (const relativePath of indexedEntries.keys()) {
+        trackPathSet.add(relativePath);
+      }
 
       const tracks = [];
+      let musicIndexChanged = false;
 
-      for (const filePath of trackPaths) {
-        const relativePath = path.relative(this.musicDir, filePath);
+      for (const relativePath of trackPathSet) {
+        const filePath = path.resolve(this.musicDir, relativePath);
+        const indexEntry = indexedEntries.get(relativePath);
         let metadata = null;
+        let stats = null;
+
+        try {
+          stats = await fsPromises.stat(filePath);
+        } catch (error) {
+          if (error.code === "ENOENT" && this.removeMusicIndexItem(relativePath)) {
+            musicIndexChanged = true;
+          }
+          continue;
+        }
 
         try {
           metadata = await parseFile(filePath, { duration: true });
         } catch {}
 
-        const stats = await fsPromises.stat(filePath);
         const common = metadata?.common ?? {};
-        const fallbackTitle = path.basename(filePath, path.extname(filePath));
+        const fallbackTitle =
+          indexEntry?.originalName
+            ? path.basename(indexEntry.originalName, path.extname(indexEntry.originalName))
+            : path.basename(filePath, path.extname(filePath));
 
         tracks.push({
           id: encodeRelativeId(relativePath),
@@ -510,6 +622,10 @@ export class NasBridge {
       }
 
       tracks.sort((left, right) => left.title.localeCompare(right.title));
+
+      if (musicIndexChanged) {
+        await this.persistMusicIndex();
+      }
 
       if (cacheVersion === this.musicCacheVersion) {
         this.musicCache = {
@@ -559,13 +675,17 @@ export class NasBridge {
   async deleteTrack(trackId) {
     const relativePath = decodeRelativeId(trackId);
     const fullPath = path.resolve(this.musicDir, relativePath);
-    const normalizedRelative = path.relative(this.musicDir, fullPath);
+    const normalizedRelative = normalizeRelativePath(this.musicDir, fullPath);
 
-    if (normalizedRelative.startsWith("..") || path.isAbsolute(normalizedRelative)) {
+    if (!normalizedRelative) {
       throw new Error("Invalid track path");
     }
 
     await fsPromises.rm(fullPath, { force: true });
+    const indexChanged = this.removeMusicIndexItem(normalizedRelative);
+    if (indexChanged) {
+      await this.persistMusicIndex();
+    }
     this.invalidateMusicCache();
 
     return {
