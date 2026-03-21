@@ -523,11 +523,12 @@ async function uploadChunk(endpoint, { uploadId, index, chunk }) {
 }
 
 async function hydrate(options = {}) {
-  const { preferredTrackId = "", autoplay = false } = options;
+  const { preferredTrackId = "", autoplay = false, refreshMusic = false } = options;
+  const musicTracksUrl = refreshMusic ? "/api/nas/music/tracks?refresh=1" : "/api/nas/music/tracks";
   const requests = [
     requestJson("/api/nas/overview"),
     requestJson("/api/nas/transfer/items"),
-    requestJson("/api/nas/music/tracks"),
+    requestJson(musicTracksUrl),
     requestJson("/api/nas/messages"),
     isAuthenticated.value ? requestJson("/api/nas/docker/containers") : Promise.resolve(null),
   ];
@@ -571,7 +572,7 @@ async function hydrate(options = {}) {
 
 async function refreshMusicLibrary() {
   try {
-    await hydrate({ preferredTrackId: activeTrackId.value });
+    await hydrate({ preferredTrackId: activeTrackId.value, refreshMusic: true });
     notify("音乐库已刷新", "info");
   } catch (error) {
     notify(error.message || "刷新曲库失败", "error");
@@ -669,7 +670,11 @@ async function uploadFiles(fileList, scope) {
     upload.percent = 0;
   }
 
-  await hydrate({ preferredTrackId, autoplay: scope === "music" && Boolean(preferredTrackId) });
+  await hydrate({
+    preferredTrackId,
+    autoplay: scope === "music" && Boolean(preferredTrackId),
+    refreshMusic: scope === "music",
+  });
 }
 
 async function onFileInputChange(event, scope) {

@@ -413,7 +413,9 @@ app.get("/api/nas/transfer/files/:id", async (request, response) => {
 
 app.get("/api/nas/music/tracks", async (request, response) => {
   try {
-    const tracks = await nasBridge.listMusicTracks();
+    const tracks = await nasBridge.listMusicTracks({
+      force: String(request.query.refresh || "") === "1",
+    });
     response.json({
       tracks,
     });

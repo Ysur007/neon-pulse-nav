@@ -159,6 +159,7 @@ export class NasBridge {
       expiresAt: 0,
       tracks: [],
     };
+    this.musicCacheVersion = 0;
     this.musicScanPromise = null;
     this.dockerInfoCache = {
       expiresAt: 0,
@@ -460,7 +461,11 @@ export class NasBridge {
     return formatTransferItem(item);
   }
 
-  async listMusicTracks() {
+  async listMusicTracks({ force = false } = {}) {
+    if (force) {
+      this.invalidateMusicCache();
+    }
+
     if (Date.now() < this.musicCache.expiresAt) {
       return this.musicCache.tracks;
     }
@@ -469,7 +474,8 @@ export class NasBridge {
       return this.musicScanPromise;
     }
 
-    this.musicScanPromise = (async () => {
+    const cacheVersion = this.musicCacheVersion;
+    const scanPromise = (async () => {
       const filePaths = await walkDirectory(this.musicDir, []);
       const trackPaths = filePaths.filter((filePath) =>
         AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())
@@ -504,18 +510,24 @@ export class NasBridge {
       }
 
       tracks.sort((left, right) => left.title.localeCompare(right.title));
-      this.musicCache = {
-        expiresAt: Date.now() + MUSIC_CACHE_TTL,
-        tracks,
-      };
+
+      if (cacheVersion === this.musicCacheVersion) {
+        this.musicCache = {
+          expiresAt: Date.now() + MUSIC_CACHE_TTL,
+          tracks,
+        };
+      }
 
       return tracks;
     })();
+    this.musicScanPromise = scanPromise;
 
     try {
-      return await this.musicScanPromise;
+      return await scanPromise;
     } finally {
-      this.musicScanPromise = null;
+      if (this.musicScanPromise === scanPromise) {
+        this.musicScanPromise = null;
+      }
     }
   }
 
@@ -562,6 +574,7 @@ export class NasBridge {
   }
 
   invalidateMusicCache() {
+    this.musicCacheVersion += 1;
     this.musicCache = {
       expiresAt: 0,
       tracks: [],
