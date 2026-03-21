@@ -64,7 +64,7 @@
 
           <div class="quick-dock">
             <a
-              v-for="entry in dockEntries"
+              v-for="entry in visibleDockEntries"
               :key="entry.item.id"
               class="dock-link"
               :href="entry.item.url"
@@ -210,7 +210,7 @@
 
           <div class="spotlight-queue">
             <a
-              v-for="item in spotlightQueue"
+              v-for="item in visibleSpotlightQueue"
               :key="item.id"
               class="queue-item"
               :href="item.url"
@@ -317,7 +317,7 @@
 
               <div class="top-routes">
                 <a
-                  v-for="(route, index) in topRoutes"
+                  v-for="(route, index) in visibleTopRoutes"
                   :key="route.linkId"
                   class="route-item"
                   :href="route.url"
@@ -333,7 +333,7 @@
                   <span class="route-count">{{ formatNumber(route.count) }}</span>
                 </a>
 
-                <article v-if="!topRoutes.length" class="route-empty">
+                <article v-if="!visibleTopRoutes.length" class="route-empty">
                   还没有统计数据，打开几个常用入口后这里就会开始生长。
                 </article>
               </div>
@@ -353,11 +353,11 @@
           <p class="control-summary">{{ controlSummary }}</p>
 
           <div class="control-chips">
-            <span v-for="chip in controlChips" :key="chip" class="control-chip">{{ chip }}</span>
+            <span v-for="chip in visibleControlChips" :key="chip" class="control-chip">{{ chip }}</span>
           </div>
 
           <div class="shortcut-list">
-            <article v-for="item in shortcutItems" :key="item.key" class="shortcut-item">
+            <article v-for="item in visibleShortcutItems" :key="item.key" class="shortcut-item">
               <span class="shortcut-key">{{ item.key }}</span>
               <span>{{ item.desc }}</span>
             </article>
@@ -462,7 +462,9 @@
     <AuthPanel
       :auth="auth"
       :login-form="loginForm"
+      :login-state="loginState"
       :credential-form="credentialForm"
+      :credential-state="credentialState"
       @close="closeAuthPanel"
       @login="handleLogin"
       @logout="handleLogout"
@@ -497,12 +499,11 @@ const {
   clockCardStyle,
   clockDateLabel,
   clockPhase,
-  controlChips,
   controlSummary,
+  credentialState,
   credentialForm,
   currentFocusLine,
   dataSyncNote,
-  dockEntries,
   draftProfile,
   drawerOpen,
   flash,
@@ -519,6 +520,7 @@ const {
   hourText,
   initials,
   isPinned,
+  loginState,
   loginForm,
   loginToWorkspace,
   logoutFromWorkspace,
@@ -546,20 +548,22 @@ const {
   scrollToNavMatrix,
   searchInputRef,
   secondText,
-  shortcutItems,
   spotlightItem,
   spotlightModeLabel,
-  spotlightQueue,
   statsModel,
   strongestTrendDay,
   statusLine,
   syncSummaryText,
   togglePin,
-  topRoutes,
   trackLinkOpen,
   trendBarsRef,
   updateAuthCredentials,
   visibleLinks,
+  visibleControlChips,
+  visibleDockEntries,
+  visibleShortcutItems,
+  visibleSpotlightQueue,
+  visibleTopRoutes,
   closeAuthPanel,
   closeDrawer,
   closePalette,

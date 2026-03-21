@@ -69,7 +69,16 @@ function serializeCookie(name, value, options = {}) {
   return segments.join("; ");
 }
 
+function sweepExpiredSessions(now = Date.now()) {
+  for (const [token, session] of sessions.entries()) {
+    if ((session?.expiresAt ?? 0) <= now) {
+      sessions.delete(token);
+    }
+  }
+}
+
 function createSession(username) {
+  sweepExpiredSessions();
   const token = randomBytes(24).toString("base64url");
   sessions.set(token, {
     username,
@@ -85,6 +94,7 @@ function clearSession(token) {
 }
 
 function getSessionFromRequest(request) {
+  sweepExpiredSessions();
   const cookies = parseCookies(request.headers.cookie);
   const token = cookies[SESSION_COOKIE_NAME];
 
@@ -168,8 +178,22 @@ app.get("/api/auth/session", (request, response) => {
 });
 
 app.post("/api/auth/login", async (request, response) => {
-  const username = request.body?.username;
-  const password = request.body?.password;
+  const username = typeof request.body?.username === "string" ? request.body.username.trim() : "";
+  const password = typeof request.body?.password === "string" ? request.body.password : "";
+
+  if (!username) {
+    response.status(400).json({
+      error: "请输入账号",
+    });
+    return;
+  }
+
+  if (!password) {
+    response.status(400).json({
+      error: "请输入密码",
+    });
+    return;
+  }
 
   if (!store.verifyCredentials(username, password)) {
     response.status(401).json({
@@ -251,6 +275,19 @@ app.get("/api/nas/transfer/items", (request, response) => {
   response.json({
     items: nasBridge.listTransferItems({ limit }),
   });
+});
+
+app.delete("/api/nas/transfer/items/:id", requireAuth, async (request, response) => {
+  try {
+    response.json({
+      item: await nasBridge.deleteTransferItem(request.params.id),
+    });
+  } catch (error) {
+    console.error("Failed to delete transfer item:", error);
+    response.status(400).json({
+      error: error.message || "Failed to delete transfer item",
+    });
+  }
 });
 
 app.post("/api/nas/transfer/upload/init", requireAuth, async (request, response) => {
@@ -384,6 +421,42 @@ app.get("/api/nas/music/tracks", async (request, response) => {
     console.error("Failed to list music tracks:", error);
     response.status(500).json({
       error: "Failed to list music tracks",
+    });
+  }
+});
+
+app.delete("/api/nas/music/tracks/:trackId", requireAuth, async (request, response) => {
+  try {
+    response.json({
+      item: await nasBridge.deleteTrack(request.params.trackId),
+    });
+  } catch (error) {
+    console.error("Failed to delete music track:", error);
+    response.status(400).json({
+      error: error.message || "Failed to delete music track",
+    });
+  }
+});
+
+app.get("/api/nas/messages", (request, response) => {
+  const limit = Number(request.query.limit || 12);
+  response.json({
+    messages: nasBridge.listMessages({ limit }),
+  });
+});
+
+app.post("/api/nas/messages", requireAuth, async (request, response) => {
+  try {
+    response.json({
+      message: await nasBridge.addMessage({
+        body: request.body?.body,
+        author: request.auth?.username,
+      }),
+    });
+  } catch (error) {
+    console.error("Failed to add NAS message:", error);
+    response.status(400).json({
+      error: error.message || "Failed to add NAS message",
     });
   }
 });

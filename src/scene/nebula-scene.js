@@ -71,6 +71,7 @@ function createOrbit(radius, tiltX, tiltY, color, opacity) {
 
 export function createNebulaScene(canvas, initialTheme = "laser") {
   const isCoarse = window.matchMedia("(pointer: coarse)").matches;
+  const maxPixelRatio = isCoarse ? 1.5 : 2;
   const renderer = new WebGLRenderer({
     canvas,
     antialias: !isCoarse,
@@ -79,7 +80,7 @@ export function createNebulaScene(canvas, initialTheme = "laser") {
   });
 
   renderer.setClearColor(0x000000, 0);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isCoarse ? 1.5 : 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxPixelRatio));
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(48, 1, 0.1, 100);
@@ -168,6 +169,12 @@ export function createNebulaScene(canvas, initialTheme = "laser") {
 
   const pointer = new Vector2(0, 0);
   const clock = new Clock();
+  let elapsed = 0;
+  let resizeFrameId = 0;
+  let currentWidth = 0;
+  let currentHeight = 0;
+  let currentPixelRatio = 0;
+  let animationRunning = false;
 
   function applyPalette(themeKey) {
     const palette = palettes[themeKey] ?? palettes.laser;
@@ -204,13 +211,37 @@ export function createNebulaScene(canvas, initialTheme = "laser") {
   function resize() {
     const width = window.innerWidth;
     const height = window.innerHeight;
+    const pixelRatio = Math.min(window.devicePixelRatio, maxPixelRatio);
+
+    if (
+      width === currentWidth &&
+      height === currentHeight &&
+      pixelRatio === currentPixelRatio
+    ) {
+      return;
+    }
+
+    currentWidth = width;
+    currentHeight = height;
+    currentPixelRatio = pixelRatio;
 
     renderer.setSize(width, height, false);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isCoarse ? 1.5 : 2));
+    renderer.setPixelRatio(pixelRatio);
 
     camera.aspect = width / height;
     camera.position.z = width < 720 ? 19.5 : 18;
     camera.updateProjectionMatrix();
+  }
+
+  function scheduleResize() {
+    if (resizeFrameId) {
+      return;
+    }
+
+    resizeFrameId = window.requestAnimationFrame(() => {
+      resizeFrameId = 0;
+      resize();
+    });
   }
 
   function handlePointerMove(event) {
@@ -219,7 +250,7 @@ export function createNebulaScene(canvas, initialTheme = "laser") {
   }
 
   function render() {
-    const elapsed = clock.getElapsedTime();
+    elapsed += Math.min(clock.getDelta(), 0.05);
     const positionArray = particleGeometry.attributes.position.array;
 
     root.rotation.x += ((pointer.y * 0.22) - root.rotation.x) * 0.035;
@@ -257,21 +288,56 @@ export function createNebulaScene(canvas, initialTheme = "laser") {
     renderer.render(scene, camera);
   }
 
+  function startAnimationLoop() {
+    if (animationRunning) {
+      return;
+    }
+
+    clock.start();
+    renderer.setAnimationLoop(render);
+    animationRunning = true;
+  }
+
+  function stopAnimationLoop() {
+    if (!animationRunning) {
+      return;
+    }
+
+    renderer.setAnimationLoop(null);
+    clock.stop();
+    animationRunning = false;
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      stopAnimationLoop();
+      return;
+    }
+
+    scheduleResize();
+    startAnimationLoop();
+  }
+
   resize();
   applyPalette(initialTheme);
-  renderer.setAnimationLoop(render);
+  startAnimationLoop();
 
-  window.addEventListener("resize", resize);
+  window.addEventListener("resize", scheduleResize);
   window.addEventListener("pointermove", handlePointerMove, { passive: true });
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 
   return {
     setTheme(themeKey) {
       applyPalette(themeKey);
     },
     destroy() {
-      renderer.setAnimationLoop(null);
-      window.removeEventListener("resize", resize);
+      stopAnimationLoop();
+      if (resizeFrameId) {
+        window.cancelAnimationFrame(resizeFrameId);
+      }
+      window.removeEventListener("resize", scheduleResize);
       window.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       particleGeometry.dispose();
       particleMaterial.dispose();
       shell.geometry.dispose();

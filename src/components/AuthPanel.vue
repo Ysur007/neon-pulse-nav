@@ -15,7 +15,7 @@
         {{
           auth.authenticated
             ? "你已经登录，可以在这里修改账号和密码。"
-            : "默认账号密码是 admin / admin。登录后才能上传文件、上传音乐和查看 Docker。"
+            : "默认密码仍然是 admin。登录后才能上传文件、上传音乐和查看 Docker。"
         }}
       </p>
       <p class="auth-note auth-note-strong">
@@ -26,17 +26,33 @@
         <div class="auth-fields">
           <label class="form-field">
             <span>账号</span>
-            <input v-model.trim="loginForm.username" type="text" autocomplete="username" maxlength="32" />
+            <input
+              v-model.trim="loginForm.username"
+              type="text"
+              autocomplete="username"
+              maxlength="32"
+              placeholder="请输入账号"
+            />
           </label>
 
           <label class="form-field">
             <span>密码</span>
-            <input v-model="loginForm.password" type="password" autocomplete="current-password" maxlength="64" />
+            <input
+              v-model="loginForm.password"
+              type="password"
+              autocomplete="current-password"
+              maxlength="64"
+              placeholder="请输入密码"
+            />
           </label>
         </div>
 
+        <p v-if="loginState.message" class="auth-note auth-note-error">{{ loginState.message }}</p>
+
         <div class="auth-actions">
-          <button class="pill-button pill-button-primary" type="submit">登录</button>
+          <button class="pill-button pill-button-primary" type="submit" :disabled="!loginState.valid">
+            登录
+          </button>
         </div>
       </form>
 
@@ -44,28 +60,58 @@
         <div class="auth-fields">
           <label class="form-field">
             <span>当前账号</span>
-            <input v-model.trim="credentialForm.currentUsername" type="text" autocomplete="username" maxlength="32" />
+            <input
+              v-model.trim="credentialForm.currentUsername"
+              type="text"
+              autocomplete="username"
+              maxlength="32"
+            />
           </label>
 
           <label class="form-field">
             <span>当前密码</span>
-            <input v-model="credentialForm.currentPassword" type="password" autocomplete="current-password" maxlength="64" />
+            <input
+              v-model="credentialForm.currentPassword"
+              type="password"
+              autocomplete="current-password"
+              maxlength="64"
+            />
           </label>
 
           <label class="form-field">
             <span>新账号</span>
-            <input v-model.trim="credentialForm.nextUsername" type="text" autocomplete="username" maxlength="32" />
+            <input
+              v-model.trim="credentialForm.nextUsername"
+              type="text"
+              autocomplete="username"
+              maxlength="32"
+            />
           </label>
 
           <label class="form-field">
             <span>新密码</span>
-            <input v-model="credentialForm.nextPassword" type="password" autocomplete="new-password" maxlength="64" />
+            <input
+              v-model="credentialForm.nextPassword"
+              type="password"
+              autocomplete="new-password"
+              maxlength="64"
+            />
           </label>
         </div>
 
+        <p v-if="credentialState.message" class="auth-note auth-note-error">
+          {{ credentialState.message }}
+        </p>
+
         <div class="auth-actions">
           <button class="ghost-button" type="button" @click="$emit('logout')">退出登录</button>
-          <button class="pill-button pill-button-primary" type="submit">更新账号密码</button>
+          <button
+            class="pill-button pill-button-primary"
+            type="submit"
+            :disabled="!credentialState.valid"
+          >
+            更新账号密码
+          </button>
         </div>
       </form>
     </section>
@@ -82,7 +128,15 @@ defineProps({
     type: Object,
     required: true,
   },
+  loginState: {
+    type: Object,
+    required: true,
+  },
   credentialForm: {
+    type: Object,
+    required: true,
+  },
+  credentialState: {
     type: Object,
     required: true,
   },

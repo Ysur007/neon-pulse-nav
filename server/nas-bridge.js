@@ -17,6 +17,9 @@ const MIME_BY_EXTENSION = {
 const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024;
 const MUSIC_CACHE_TTL = 15_000;
 const DOCKER_STATS_TTL = 10_000;
+const DOCKER_INFO_TTL = 5_000;
+const MESSAGE_LIMIT = 40;
+const MESSAGE_LENGTH_LIMIT = 240;
 const VALID_UPLOAD_TARGETS = new Set(["transfer", "music"]);
 
 function ensureArray(value) {
@@ -55,6 +58,14 @@ function formatTransferItem(item) {
     createdAt: item.createdAt,
     downloadUrl: `/api/nas/transfer/files/${item.id}`,
   };
+}
+
+function sanitizeMessageBody(body) {
+  if (typeof body !== "string") {
+    return "";
+  }
+
+  return body.trim().slice(0, MESSAGE_LENGTH_LIMIT);
 }
 
 async function ensureDir(dirPath) {
@@ -139,13 +150,21 @@ export class NasBridge {
     );
     this.musicDir = path.resolve(process.env.NAS_MUSIC_DIR || path.join(this.bridgeDir, "music"));
     this.transferIndexFile = path.join(this.bridgeDir, "transfer-index.json");
+    this.messageBoardFile = path.join(this.bridgeDir, "transfer-messages.json");
     this.uploadSessionDir = path.join(this.bridgeDir, "upload-sessions");
     this.dockerSocketPath = process.env.DOCKER_SOCKET_PATH || "/var/run/docker.sock";
     this.transferIndex = { items: [] };
+    this.messageBoard = { messages: [] };
     this.musicCache = {
       expiresAt: 0,
       tracks: [],
     };
+    this.musicScanPromise = null;
+    this.dockerInfoCache = {
+      expiresAt: 0,
+      value: null,
+    };
+    this.dockerInfoPromise = null;
     this.dockerStatsCache = new Map();
     this.docker = null;
   }
@@ -158,13 +177,24 @@ export class NasBridge {
 
     this.transferIndex = await readJson(this.transferIndexFile, { items: [] });
     this.transferIndex.items = ensureArray(this.transferIndex.items);
+    this.messageBoard = await readJson(this.messageBoardFile, { messages: [] });
+    this.messageBoard.messages = ensureArray(this.messageBoard.messages);
     await this.persistTransferIndex();
+    await this.persistMessageBoard();
     await this.cleanupExpiredUploadSessions();
   }
 
   async persistTransferIndex() {
     await writeJson(this.transferIndexFile, {
       items: this.transferIndex.items
+        .slice()
+        .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)),
+    });
+  }
+
+  async persistMessageBoard() {
+    await writeJson(this.messageBoardFile, {
+      messages: this.messageBoard.messages
         .slice()
         .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)),
     });
@@ -218,6 +248,33 @@ export class NasBridge {
       .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
       .slice(0, limit)
       .map(formatTransferItem);
+  }
+
+  listMessages({ limit = 12 } = {}) {
+    return this.messageBoard.messages
+      .slice()
+      .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
+      .slice(0, limit);
+  }
+
+  async addMessage({ body, author }) {
+    const nextBody = sanitizeMessageBody(body);
+    const nextAuthor = typeof author === "string" && author.trim() ? author.trim().slice(0, 32) : "Anonymous";
+
+    if (!nextBody) {
+      throw new Error("Message body is required");
+    }
+
+    const message = {
+      id: randomUUID(),
+      body: nextBody,
+      author: nextAuthor,
+      createdAt: Date.now(),
+    };
+
+    this.messageBoard.messages = [message, ...this.messageBoard.messages].slice(0, MESSAGE_LIMIT);
+    await this.persistMessageBoard();
+    return message;
   }
 
   async initUpload({ fileName, size, mime }) {
@@ -342,10 +399,7 @@ export class NasBridge {
     };
 
     if (session.target === "music") {
-      this.musicCache = {
-        expiresAt: 0,
-        tracks: [],
-      };
+      this.invalidateMusicCache();
     } else {
       this.transferIndex.items = [item, ...this.transferIndex.items].slice(0, 200);
       await this.persistTransferIndex();
@@ -391,51 +445,78 @@ export class NasBridge {
     };
   }
 
+  async deleteTransferItem(itemId) {
+    const item = this.getTransferItemById(itemId);
+
+    if (!item) {
+      throw new Error("Transfer file not found");
+    }
+
+    const filePath = path.join(this.transferDir, item.storedName);
+    await fsPromises.rm(filePath, { force: true });
+    this.transferIndex.items = this.transferIndex.items.filter((entry) => entry.id !== itemId);
+    await this.persistTransferIndex();
+
+    return formatTransferItem(item);
+  }
+
   async listMusicTracks() {
     if (Date.now() < this.musicCache.expiresAt) {
       return this.musicCache.tracks;
     }
 
-    const filePaths = await walkDirectory(this.musicDir, []);
-    const trackPaths = filePaths.filter((filePath) =>
-      AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())
-    );
-
-    const tracks = [];
-
-    for (const filePath of trackPaths) {
-      const relativePath = path.relative(this.musicDir, filePath);
-      let metadata = null;
-
-      try {
-        metadata = await parseFile(filePath, { duration: true });
-      } catch {}
-
-      const stats = await fsPromises.stat(filePath);
-      const common = metadata?.common ?? {};
-      const fallbackTitle = path.basename(filePath, path.extname(filePath));
-
-      tracks.push({
-        id: encodeRelativeId(relativePath),
-        title: common.title || fallbackTitle,
-        artist: common.artist || "Unknown Artist",
-        album: common.album || "Unknown Album",
-        duration: metadata?.format?.duration
-          ? Math.round(metadata.format.duration)
-          : null,
-        size: stats.size,
-        updatedAt: stats.mtimeMs,
-        streamUrl: `/api/nas/music/stream/${encodeRelativeId(relativePath)}`,
-      });
+    if (this.musicScanPromise) {
+      return this.musicScanPromise;
     }
 
-    tracks.sort((left, right) => left.title.localeCompare(right.title));
-    this.musicCache = {
-      expiresAt: Date.now() + MUSIC_CACHE_TTL,
-      tracks,
-    };
+    this.musicScanPromise = (async () => {
+      const filePaths = await walkDirectory(this.musicDir, []);
+      const trackPaths = filePaths.filter((filePath) =>
+        AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+      );
 
-    return tracks;
+      const tracks = [];
+
+      for (const filePath of trackPaths) {
+        const relativePath = path.relative(this.musicDir, filePath);
+        let metadata = null;
+
+        try {
+          metadata = await parseFile(filePath, { duration: true });
+        } catch {}
+
+        const stats = await fsPromises.stat(filePath);
+        const common = metadata?.common ?? {};
+        const fallbackTitle = path.basename(filePath, path.extname(filePath));
+
+        tracks.push({
+          id: encodeRelativeId(relativePath),
+          title: common.title || fallbackTitle,
+          artist: common.artist || "Unknown Artist",
+          album: common.album || "Unknown Album",
+          duration: metadata?.format?.duration
+            ? Math.round(metadata.format.duration)
+            : null,
+          size: stats.size,
+          updatedAt: stats.mtimeMs,
+          streamUrl: `/api/nas/music/stream/${encodeRelativeId(relativePath)}`,
+        });
+      }
+
+      tracks.sort((left, right) => left.title.localeCompare(right.title));
+      this.musicCache = {
+        expiresAt: Date.now() + MUSIC_CACHE_TTL,
+        tracks,
+      };
+
+      return tracks;
+    })();
+
+    try {
+      return await this.musicScanPromise;
+    } finally {
+      this.musicScanPromise = null;
+    }
   }
 
   async getMusicSummary() {
@@ -463,6 +544,31 @@ export class NasBridge {
     };
   }
 
+  async deleteTrack(trackId) {
+    const relativePath = decodeRelativeId(trackId);
+    const fullPath = path.resolve(this.musicDir, relativePath);
+    const normalizedRelative = path.relative(this.musicDir, fullPath);
+
+    if (normalizedRelative.startsWith("..") || path.isAbsolute(normalizedRelative)) {
+      throw new Error("Invalid track path");
+    }
+
+    await fsPromises.rm(fullPath, { force: true });
+    this.invalidateMusicCache();
+
+    return {
+      id: trackId,
+    };
+  }
+
+  invalidateMusicCache() {
+    this.musicCache = {
+      expiresAt: 0,
+      tracks: [],
+    };
+    this.musicScanPromise = null;
+  }
+
   getDockerClient() {
     if (this.docker) {
       return this.docker;
@@ -476,35 +582,65 @@ export class NasBridge {
   }
 
   async getDockerInfo() {
-    try {
-      if (!(await fsPromises.stat(this.dockerSocketPath)).isSocket?.()) {
-        // continue even if stat cannot classify socket reliably across platforms
-      }
-    } catch (error) {
-      return {
-        available: false,
-        socketPath: this.dockerSocketPath,
-        error: `Docker socket not found: ${error.message}`,
-      };
+    if (Date.now() < this.dockerInfoCache.expiresAt && this.dockerInfoCache.value) {
+      return this.dockerInfoCache.value;
     }
 
-    try {
-      const docker = this.getDockerClient();
-      await docker.ping();
-      const version = await docker.version();
+    if (this.dockerInfoPromise) {
+      return this.dockerInfoPromise;
+    }
 
-      return {
-        available: true,
-        socketPath: this.dockerSocketPath,
-        engineVersion: version.Version,
-        apiVersion: version.ApiVersion,
+    this.dockerInfoPromise = (async () => {
+      let result;
+
+      try {
+        if (!(await fsPromises.stat(this.dockerSocketPath)).isSocket?.()) {
+          // continue even if stat cannot classify socket reliably across platforms
+        }
+      } catch (error) {
+        result = {
+          available: false,
+          socketPath: this.dockerSocketPath,
+          error: `Docker socket not found: ${error.message}`,
+        };
+        this.dockerInfoCache = {
+          expiresAt: Date.now() + DOCKER_INFO_TTL,
+          value: result,
+        };
+        return result;
+      }
+
+      try {
+        const docker = this.getDockerClient();
+        await docker.ping();
+        const version = await docker.version();
+
+        result = {
+          available: true,
+          socketPath: this.dockerSocketPath,
+          engineVersion: version.Version,
+          apiVersion: version.ApiVersion,
+        };
+      } catch (error) {
+        result = {
+          available: false,
+          socketPath: this.dockerSocketPath,
+          error: error.message,
+        };
+      }
+
+      this.dockerInfoCache = {
+        expiresAt: Date.now() + DOCKER_INFO_TTL,
+        value: result,
       };
-    } catch (error) {
-      return {
-        available: false,
-        socketPath: this.dockerSocketPath,
-        error: error.message,
-      };
+
+      return result;
+    })();
+
+    try {
+      return await this.dockerInfoPromise;
+    } finally {
+      this.dockerInfoPromise = null;
     }
   }
 
@@ -520,6 +656,12 @@ export class NasBridge {
 
     const docker = this.getDockerClient();
     const containers = await docker.listContainers({ all: true });
+    const containerIds = new Set(containers.map((container) => container.Id));
+    for (const cachedId of this.dockerStatsCache.keys()) {
+      if (!containerIds.has(cachedId)) {
+        this.dockerStatsCache.delete(cachedId);
+      }
+    }
     const enriched = await Promise.all(
       containers.map(async (container) => {
         const details = {
@@ -589,6 +731,10 @@ export class NasBridge {
     }
 
     this.dockerStatsCache.delete(containerId);
+    this.dockerInfoCache = {
+      expiresAt: 0,
+      value: null,
+    };
   }
 }
 

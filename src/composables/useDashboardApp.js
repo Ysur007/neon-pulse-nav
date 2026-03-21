@@ -22,6 +22,27 @@ const CATEGORY_ALL = "全部";
 const CATEGORY_PINNED = "已置顶";
 const COMMAND_RESULT_LIMIT = 10;
 const RECENT_DAYS_WINDOW = 7;
+const MOBILE_BREAKPOINT = 760;
+const numberFormatter = new Intl.NumberFormat("zh-CN");
+const dateLabelFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "numeric",
+  day: "numeric",
+});
+const weekdayFormatter = new Intl.DateTimeFormat("zh-CN", {
+  weekday: "short",
+});
+const absoluteTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const clockDateFormatter = new Intl.DateTimeFormat("zh-CN", {
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
 
 function createEmptyStats() {
   return {
@@ -53,22 +74,17 @@ function getRecentDateKeys(days = RECENT_DAYS_WINDOW) {
 }
 
 function formatNumber(value) {
-  return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+  return numberFormatter.format(Number(value) || 0);
 }
 
 function formatDateLabel(dateKey) {
   const date = new Date(`${dateKey}T00:00:00`);
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
+  return dateLabelFormatter.format(date);
 }
 
 function formatWeekdayLabel(dateKey) {
   const date = new Date(`${dateKey}T00:00:00`);
-  return new Intl.DateTimeFormat("zh-CN", {
-    weekday: "short",
-  }).format(date);
+  return weekdayFormatter.format(date);
 }
 
 function formatAbsoluteTime(value) {
@@ -76,12 +92,7 @@ function formatAbsoluteTime(value) {
     return "尚未同步";
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return absoluteTimeFormatter.format(new Date(value));
 }
 
 function formatRelativeTime(value) {
@@ -128,6 +139,74 @@ function sanitizeProfile(nextProfile = {}) {
     primaryFocus: sanitizeString(nextProfile.primaryFocus, profilePreset.primaryFocus, 48),
     secondaryFocus: sanitizeString(nextProfile.secondaryFocus, profilePreset.secondaryFocus, 48),
   };
+}
+
+function normalizeAuthText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getLoginValidationState(form) {
+  const username = normalizeAuthText(form.username);
+  const password = typeof form.password === "string" ? form.password : "";
+
+  if (!username) {
+    return { valid: false, message: "请输入账号" };
+  }
+
+  if (username.length > 32) {
+    return { valid: false, message: "账号不能超过 32 位" };
+  }
+
+  if (!password) {
+    return { valid: false, message: "请输入密码" };
+  }
+
+  if (password.length < 4) {
+    return { valid: false, message: "密码至少需要 4 位" };
+  }
+
+  if (password.length > 64) {
+    return { valid: false, message: "密码不能超过 64 位" };
+  }
+
+  return { valid: true, message: "" };
+}
+
+function getCredentialValidationState(form) {
+  const currentUsername = normalizeAuthText(form.currentUsername);
+  const currentPassword = typeof form.currentPassword === "string" ? form.currentPassword : "";
+  const nextUsername = normalizeAuthText(form.nextUsername);
+  const nextPassword = typeof form.nextPassword === "string" ? form.nextPassword : "";
+
+  if (!currentUsername) {
+    return { valid: false, message: "请输入当前账号" };
+  }
+
+  if (!currentPassword) {
+    return { valid: false, message: "请输入当前密码" };
+  }
+
+  if (!nextUsername) {
+    return { valid: false, message: "请输入新账号" };
+  }
+
+  if (nextUsername.length > 32) {
+    return { valid: false, message: "新账号不能超过 32 位" };
+  }
+
+  if (!nextPassword) {
+    return { valid: false, message: "请输入新密码" };
+  }
+
+  if (nextPassword.length < 4) {
+    return { valid: false, message: "新密码至少需要 4 位" };
+  }
+
+  if (nextPassword.length > 64) {
+    return { valid: false, message: "新密码不能超过 64 位" };
+  }
+
+  return { valid: true, message: "" };
 }
 
 function getInitials(alias) {
@@ -208,6 +287,7 @@ export function useDashboardApp() {
   const serverReady = ref(false);
   const updatedAt = ref("");
   const coarsePointer = ref(false);
+  const compactViewport = ref(false);
   const fxReady = ref(true);
   const flashTimerId = ref(0);
   const clockTimerId = ref(0);
@@ -229,7 +309,7 @@ export function useDashboardApp() {
     panelOpen: false,
   });
   const loginForm = reactive({
-    username: "admin",
+    username: "",
     password: "",
   });
   const credentialForm = reactive({
@@ -253,14 +333,7 @@ export function useDashboardApp() {
   const hourText = computed(() => String(currentTime.value.getHours()).padStart(2, "0"));
   const minuteText = computed(() => String(currentTime.value.getMinutes()).padStart(2, "0"));
   const secondText = computed(() => String(currentTime.value.getSeconds()).padStart(2, "0"));
-  const clockDateLabel = computed(() =>
-    new Intl.DateTimeFormat("zh-CN", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    }).format(currentTime.value)
-  );
+  const clockDateLabel = computed(() => clockDateFormatter.format(currentTime.value));
   const clockPhase = computed(() => getClockPhase(currentTime.value.getHours()));
   const clockCardStyle = computed(() => {
     const hours = currentTime.value.getHours() % 12;
@@ -499,6 +572,23 @@ export function useDashboardApp() {
     { key: "T", desc: "切换主题" },
     { key: "Esc", desc: "关闭抽屉或命令面板" },
   ];
+  const loginState = computed(() => getLoginValidationState(loginForm));
+  const credentialState = computed(() => getCredentialValidationState(credentialForm));
+  const visibleDockEntries = computed(() =>
+    compactViewport.value ? dockEntries.value.slice(0, 2) : dockEntries.value
+  );
+  const visibleSpotlightQueue = computed(() =>
+    compactViewport.value ? spotlightQueue.value.slice(0, 2) : spotlightQueue.value
+  );
+  const visibleTopRoutes = computed(() =>
+    compactViewport.value ? topRoutes.value.slice(0, 3) : topRoutes.value
+  );
+  const visibleControlChips = computed(() =>
+    compactViewport.value ? controlChips.value.slice(0, 2) : controlChips.value
+  );
+  const visibleShortcutItems = computed(() =>
+    compactViewport.value ? shortcutItems.slice(0, 2) : shortcutItems
+  );
   const resultsMeta = computed(() => {
     if (query.value.trim()) {
       return `搜索 “${query.value.trim()}” 匹配到 ${visibleLinks.value.length} 个入口`;
@@ -711,6 +801,10 @@ export function useDashboardApp() {
     credentialForm.nextPassword = "";
   }
 
+  function syncViewportFlags() {
+    compactViewport.value = window.innerWidth <= MOBILE_BREAKPOINT;
+  }
+
   function mergeAuthPayload(payload = {}) {
     auth.checked = true;
     auth.authenticated = Boolean(payload.authenticated);
@@ -723,10 +817,15 @@ export function useDashboardApp() {
   }
 
   async function loginToWorkspace() {
+    if (!loginState.value.valid) {
+      setFlash(loginState.value.message, "error");
+      return;
+    }
+
     const payload = await requestJson("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({
-        username: loginForm.username,
+        username: normalizeAuthText(loginForm.username),
         password: loginForm.password,
       }),
     });
@@ -749,18 +848,23 @@ export function useDashboardApp() {
       username: "",
     });
     setFlash("已退出登录", "info");
-    loginForm.username = "admin";
+    loginForm.username = "";
     loginForm.password = "";
     await nasDeckRef.value?.hydrate();
   }
 
   async function updateAuthCredentials() {
+    if (!credentialState.value.valid) {
+      setFlash(credentialState.value.message, "error");
+      return;
+    }
+
     const payload = await requestJson("/api/auth/credentials", {
       method: "PUT",
       body: JSON.stringify({
-        currentUsername: credentialForm.currentUsername,
+        currentUsername: normalizeAuthText(credentialForm.currentUsername),
         currentPassword: credentialForm.currentPassword,
-        nextUsername: credentialForm.nextUsername,
+        nextUsername: normalizeAuthText(credentialForm.nextUsername),
         nextPassword: credentialForm.nextPassword,
       }),
     });
@@ -878,10 +982,7 @@ export function useDashboardApp() {
       return;
     }
 
-    todayClicks.value = {
-      ...todayClicks.value,
-      [linkId]: (todayClicks.value[linkId] ?? 0) + 1,
-    };
+    todayClicks.value[linkId] = (todayClicks.value[linkId] ?? 0) + 1;
 
     const payload = JSON.stringify({ linkId });
 
@@ -1023,7 +1124,7 @@ export function useDashboardApp() {
     if (auth.authenticated) {
       syncCredentialForm();
     } else {
-      loginForm.username = auth.username || "admin";
+      loginForm.username = auth.username || "";
       loginForm.password = "";
     }
     await nextTick();
@@ -1263,6 +1364,7 @@ export function useDashboardApp() {
 
   onMounted(async () => {
     coarsePointer.value = window.matchMedia("(pointer: coarse)").matches;
+    syncViewportFlags();
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     const nextThemeIndex = themes.findIndex((item) => item.key === savedTheme);
     themeIndex.value = nextThemeIndex >= 0 ? nextThemeIndex : 0;
@@ -1270,6 +1372,7 @@ export function useDashboardApp() {
     syncDraftProfile();
 
     document.addEventListener("keydown", onDocumentKeydown);
+    window.addEventListener("resize", syncViewportFlags);
     await initScene();
 
     try {
@@ -1290,7 +1393,6 @@ export function useDashboardApp() {
 
     flashTimerId.value = window.setInterval(() => {
       clearFlash();
-      currentTime.value = new Date();
     }, 30_000);
 
     clockTimerId.value = window.setInterval(() => {
@@ -1304,6 +1406,7 @@ export function useDashboardApp() {
 
   onBeforeUnmount(() => {
     document.removeEventListener("keydown", onDocumentKeydown);
+    window.removeEventListener("resize", syncViewportFlags);
     document.body.classList.remove("drawer-open", "auth-open", "palette-open");
     scene.value?.destroy?.();
     window.clearTimeout(statsRefreshTimer.value);
@@ -1320,8 +1423,10 @@ export function useDashboardApp() {
     clockDateLabel,
     clockPhase,
     coarsePointer,
+    compactViewport,
     controlChips,
     controlSummary,
+    credentialState,
     credentialForm,
     currentFocusLine,
     dataSyncNote,
@@ -1341,6 +1446,7 @@ export function useDashboardApp() {
     handleTrendWheel,
     hourText,
     initials,
+    loginState,
     loginForm,
     metricCards,
     minuteText,
@@ -1384,6 +1490,11 @@ export function useDashboardApp() {
     trendBarsRef,
     updateAuthCredentials,
     visibleLinks,
+    visibleControlChips,
+    visibleDockEntries,
+    visibleShortcutItems,
+    visibleSpotlightQueue,
+    visibleTopRoutes,
     categories,
     activeCategory,
     closeAuthPanel,
