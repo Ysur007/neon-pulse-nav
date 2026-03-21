@@ -27,7 +27,7 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 COPY server ./server
-COPY src/data ./src/data
+COPY --from=builder /app/src/data ./src/data
 
 RUN mkdir -p /app/data /app/nas/transfer /app/nas/music
 

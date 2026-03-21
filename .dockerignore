@@ -5,4 +5,4 @@ dist
 .vite-dev.log
 npm-debug.log*
 README.md
-data
+/data

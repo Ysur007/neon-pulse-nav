@@ -1,12 +1,12 @@
-node_modules/
-dist/
+/node_modules/
+/dist/
 
 .env
 .env.local
 
-data/
-data-test/
-release/
+/data/
+/data-test/
+/release/
 
 *.log
 .server.log
