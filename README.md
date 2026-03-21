@@ -196,6 +196,28 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 ```
 
+在飞牛 / fnOS 界面中的创建步骤：
+
+1. 进入 Docker 或 Compose 页面
+2. 点击“新增项目”
+3. 项目名称填写：`neon-pulse-nav`
+4. 路径填写：`/vol1/1000/docker/neon-pulse-nav`
+5. 来源选择“创建 docker-compose.yml”
+6. 把上面的 Compose 内容完整粘贴进去
+7. 勾选“创建项目后立即启动”
+8. 点击“确认”
+
+如果你不想手动粘贴，也可以选择“上传 docker-compose.yml”，上传仓库里的：
+
+```text
+docker-compose.ghcr.yml
+```
+
+这两种方式的区别：
+
+- “创建 docker-compose.yml”：适合直接在飞牛网页里创建
+- “上传 docker-compose.yml”：适合你已经下载好了现成文件
+
 这种方式的优点：
 
 - 只需要 Compose 文件
