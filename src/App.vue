@@ -16,7 +16,7 @@
           <button class="ghost-button" type="button" @click="cycleTheme">
             主题 · {{ activeTheme.label }}
           </button>
-          <button class="ghost-button" type="button" @click="openPalette">命令面板</button>
+          <button class="ghost-button" type="button" @click="openPalette()">命令面板</button>
           <button class="pill-button pill-button-primary" type="button" @click="openAuthPanel">
             {{ auth.authenticated ? `账号 · ${auth.username}` : "登录" }}
           </button>

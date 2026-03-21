@@ -145,6 +145,10 @@ function normalizeAuthText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeFreeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function getLoginValidationState(form) {
   const username = normalizeAuthText(form.username);
   const password = typeof form.password === "string" ? form.password : "";
@@ -320,6 +324,8 @@ export function useDashboardApp() {
   });
 
   const activeTheme = computed(() => themes[themeIndex.value] ?? themes[0]);
+  const normalizedQuery = computed(() => normalizeFreeText(query.value));
+  const normalizedPaletteQuery = computed(() => normalizeFreeText(paletteQuery.value));
   const categories = computed(() => [
     CATEGORY_ALL,
     CATEGORY_PINNED,
@@ -348,7 +354,7 @@ export function useDashboardApp() {
     };
   });
   const visibleLinks = computed(() => {
-    const keyword = query.value.trim().toLowerCase();
+    const keyword = normalizedQuery.value.toLowerCase();
 
     return allLinks.filter((item) => {
       const categoryMatch =
@@ -564,7 +570,7 @@ export function useDashboardApp() {
     `主题：${activeTheme.value.label}`,
     `置顶入口：${pinnedIds.value.length} 个`,
     `筛选：${activeCategory.value}`,
-    `搜索：${query.value.trim() || "无"}`,
+    `搜索：${normalizedQuery.value || "无"}`,
   ]);
   const shortcutItems = [
     { key: "Ctrl / Cmd + K", desc: "打开命令面板" },
@@ -590,8 +596,8 @@ export function useDashboardApp() {
     compactViewport.value ? shortcutItems.slice(0, 2) : shortcutItems
   );
   const resultsMeta = computed(() => {
-    if (query.value.trim()) {
-      return `搜索 “${query.value.trim()}” 匹配到 ${visibleLinks.value.length} 个入口`;
+    if (normalizedQuery.value) {
+      return `搜索 “${normalizedQuery.value}” 匹配到 ${visibleLinks.value.length} 个入口`;
     }
 
     if (activeCategory.value === CATEGORY_ALL) {
@@ -614,7 +620,7 @@ export function useDashboardApp() {
     return "当前未拿到服务端快照，导出、导入和清理操作会在服务端恢复后更可靠。";
   });
   const paletteEntries = computed(() => {
-    const keyword = paletteQuery.value.trim().toLowerCase();
+    const keyword = normalizedPaletteQuery.value.toLowerCase();
     const commandEntries = [
       {
         id: "command:customize",
@@ -1138,7 +1144,7 @@ export function useDashboardApp() {
     closeDrawer();
     closeAuthPanel();
     paletteOpen.value = true;
-    paletteQuery.value = initialQuery;
+    paletteQuery.value = typeof initialQuery === "string" ? initialQuery : "";
     paletteIndex.value = 0;
     await nextTick();
   }
