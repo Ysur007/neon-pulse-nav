@@ -34,6 +34,7 @@ const DOCKER_INFO_TTL = 5_000;
 const MESSAGE_LIMIT = 40;
 const MESSAGE_LENGTH_LIMIT = 240;
 const VALID_UPLOAD_TARGETS = new Set(["transfer", "music"]);
+const ARTWORK_CACHE_TTL = 60_000;
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
@@ -90,6 +91,120 @@ function sanitizeMessageBody(body) {
   }
 
   return body.trim().slice(0, MESSAGE_LENGTH_LIMIT);
+}
+
+function formatLrcTimestamp(timestamp) {
+  const safeTimestamp = Number(timestamp);
+
+  if (!Number.isFinite(safeTimestamp) || safeTimestamp < 0) {
+    return null;
+  }
+
+  const totalCentiseconds = Math.floor(safeTimestamp / 10);
+  const minutes = Math.floor(totalCentiseconds / 6000);
+  const seconds = Math.floor((totalCentiseconds % 6000) / 100);
+  const centiseconds = totalCentiseconds % 100;
+
+  return `[${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(
+    centiseconds
+  ).padStart(2, "0")}]`;
+}
+
+function extractEmbeddedLyrics(metadata) {
+  const lyricEntries = ensureArray(metadata?.common?.lyrics);
+
+  for (const entry of lyricEntries) {
+    if (typeof entry === "string" && entry.trim()) {
+      return {
+        lyrics: entry.trim(),
+        lyricsFormat: "plain",
+      };
+    }
+
+    if (typeof entry?.text === "string" && entry.text.trim()) {
+      return {
+        lyrics: entry.text.trim(),
+        lyricsFormat: "plain",
+      };
+    }
+
+    const syncLines = ensureArray(entry?.syncText)
+      .filter((line) => typeof line?.text === "string" && line.text.trim())
+      .map((line) => ({
+        text: line.text.trim(),
+        timestamp:
+          typeof line.timestamp?.milliseconds === "number"
+            ? line.timestamp.milliseconds
+            : typeof line.timestamp === "number"
+              ? line.timestamp
+              : null,
+      }));
+
+    if (!syncLines.length) {
+      continue;
+    }
+
+    const hasTimestamp = syncLines.some((line) => Number.isFinite(line.timestamp));
+    if (!hasTimestamp) {
+      return {
+        lyrics: syncLines.map((line) => line.text).join("\n"),
+        lyricsFormat: "plain",
+      };
+    }
+
+    return {
+      lyrics: syncLines
+        .map((line) => {
+          const marker = formatLrcTimestamp(line.timestamp);
+          return marker ? `${marker} ${line.text}` : line.text;
+        })
+        .join("\n"),
+      lyricsFormat: "lrc",
+    };
+  }
+
+  return null;
+}
+
+async function readSidecarLyrics(filePath) {
+  const lyricsPath = path.join(
+    path.dirname(filePath),
+    `${path.basename(filePath, path.extname(filePath))}.lrc`
+  );
+
+  try {
+    const lyrics = (await fsPromises.readFile(lyricsPath, "utf8")).replace(/^\uFEFF/, "").trim();
+
+    if (!lyrics) {
+      return null;
+    }
+
+    return {
+      lyrics,
+      lyricsFormat: "lrc",
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function extractArtwork(metadata) {
+  const picture = ensureArray(metadata?.common?.picture).find(
+    (item) => item?.data && item.data.length
+  );
+
+  if (!picture) {
+    return null;
+  }
+
+  return {
+    mimeType: picture.format || "image/jpeg",
+    buffer: Buffer.from(picture.data),
+  };
 }
 
 async function ensureDir(dirPath) {
@@ -187,6 +302,8 @@ export class NasBridge {
     };
     this.musicCacheVersion = 0;
     this.musicScanPromise = null;
+    this.musicDetailCache = new Map();
+    this.musicArtworkCache = new Map();
     this.dockerInfoCache = {
       expiresAt: 0,
       value: null,
@@ -657,24 +774,7 @@ export class NasBridge {
     };
   }
 
-  async resolveTrack(trackId) {
-    const relativePath = decodeRelativeId(trackId);
-    const fullPath = path.resolve(this.musicDir, relativePath);
-    const normalizedRelative = path.relative(this.musicDir, fullPath);
-
-    if (normalizedRelative.startsWith("..") || path.isAbsolute(normalizedRelative)) {
-      throw new Error("Invalid track path");
-    }
-
-    await fsPromises.access(fullPath);
-
-    return {
-      filePath: fullPath,
-      mime: getSafeMimeType(fullPath, "audio/mpeg"),
-    };
-  }
-
-  async deleteTrack(trackId) {
+  async resolveTrackEntry(trackId) {
     const relativePath = decodeRelativeId(trackId);
     const fullPath = path.resolve(this.musicDir, relativePath);
     const normalizedRelative = normalizeRelativePath(this.musicDir, fullPath);
@@ -683,7 +783,125 @@ export class NasBridge {
       throw new Error("Invalid track path");
     }
 
-    await fsPromises.rm(fullPath, { force: true });
+    const stats = await fsPromises.stat(fullPath);
+
+    return {
+      id: encodeRelativeId(normalizedRelative),
+      relativePath: normalizedRelative,
+      filePath: fullPath,
+      stats,
+      mime: getSafeMimeType(fullPath, "audio/mpeg"),
+    };
+  }
+
+  async resolveTrack(trackId) {
+    const { filePath, mime } = await this.resolveTrackEntry(trackId);
+    return {
+      filePath,
+      mime,
+    };
+  }
+
+  async getTrackDetail(trackId, { force = false } = {}) {
+    const trackEntry = await this.resolveTrackEntry(trackId);
+    const cacheKey = trackEntry.id;
+    const cachedDetail = this.musicDetailCache.get(cacheKey);
+
+    if (
+      !force &&
+      cachedDetail &&
+      cachedDetail.updatedAt === trackEntry.stats.mtimeMs &&
+      Date.now() < cachedDetail.expiresAt
+    ) {
+      return cachedDetail.value;
+    }
+
+    let metadata = null;
+    try {
+      metadata = await parseFile(trackEntry.filePath, {
+        duration: true,
+        skipCovers: false,
+      });
+    } catch {}
+
+    const artwork = extractArtwork(metadata);
+    if (artwork) {
+      this.musicArtworkCache.set(cacheKey, {
+        updatedAt: trackEntry.stats.mtimeMs,
+        expiresAt: Date.now() + ARTWORK_CACHE_TTL,
+        value: artwork,
+      });
+    } else {
+      this.musicArtworkCache.delete(cacheKey);
+    }
+
+    const tracks = await this.listMusicTracks();
+    const lightweightTrack =
+      tracks.find((item) => item.id === cacheKey) ??
+      {
+        id: cacheKey,
+        title: path.basename(trackEntry.filePath, path.extname(trackEntry.filePath)),
+        artist: "Unknown Artist",
+        album: "Unknown Album",
+        duration: null,
+        streamUrl: `/api/nas/music/stream/${cacheKey}?v=${Math.floor(trackEntry.stats.mtimeMs)}`,
+      };
+
+    const embeddedLyrics = extractEmbeddedLyrics(metadata);
+    const sidecarLyrics = embeddedLyrics ? null : await readSidecarLyrics(trackEntry.filePath);
+    const lyricsPayload = embeddedLyrics || sidecarLyrics || { lyrics: "", lyricsFormat: "none" };
+
+    const detail = {
+      id: cacheKey,
+      title: lightweightTrack.title,
+      artist: lightweightTrack.artist,
+      album: lightweightTrack.album,
+      duration:
+        lightweightTrack.duration ??
+        (metadata?.format?.duration ? Math.round(metadata.format.duration) : null),
+      streamUrl: `/api/nas/music/stream/${cacheKey}?v=${Math.floor(trackEntry.stats.mtimeMs)}`,
+      artworkUrl: artwork
+        ? `/api/nas/music/artwork/${cacheKey}?v=${Math.floor(trackEntry.stats.mtimeMs)}`
+        : null,
+      lyrics: lyricsPayload.lyrics,
+      lyricsFormat: lyricsPayload.lyricsFormat,
+    };
+
+    this.musicDetailCache.set(cacheKey, {
+      updatedAt: trackEntry.stats.mtimeMs,
+      expiresAt: Date.now() + MUSIC_CACHE_TTL,
+      value: detail,
+    });
+
+    return detail;
+  }
+
+  async getTrackArtwork(trackId) {
+    const trackEntry = await this.resolveTrackEntry(trackId);
+    const cacheKey = trackEntry.id;
+    const cachedArtwork = this.musicArtworkCache.get(cacheKey);
+
+    if (
+      cachedArtwork &&
+      cachedArtwork.updatedAt === trackEntry.stats.mtimeMs &&
+      Date.now() < cachedArtwork.expiresAt
+    ) {
+      return cachedArtwork.value;
+    }
+
+    await this.getTrackDetail(cacheKey, { force: true });
+    return this.musicArtworkCache.get(cacheKey)?.value ?? null;
+  }
+
+  async deleteTrack(trackId) {
+    const { filePath, relativePath, id } = await this.resolveTrackEntry(trackId);
+    const normalizedRelative = normalizeRelativePath(this.musicDir, relativePath);
+
+    if (!normalizedRelative) {
+      throw new Error("Invalid track path");
+    }
+
+    await fsPromises.rm(filePath, { force: true });
     const indexChanged = this.removeMusicIndexItem(normalizedRelative);
     if (indexChanged) {
       await this.persistMusicIndex();
@@ -691,7 +909,7 @@ export class NasBridge {
     this.invalidateMusicCache();
 
     return {
-      id: trackId,
+      id,
     };
   }
 
@@ -702,6 +920,8 @@ export class NasBridge {
       tracks: [],
     };
     this.musicScanPromise = null;
+    this.musicDetailCache.clear();
+    this.musicArtworkCache.clear();
   }
 
   getDockerClient() {

@@ -1,7 +1,7 @@
 <template>
   <div v-if="islandVisible" class="music-island-shell" :class="{ 'is-expanded': islandExpanded }">
     <div ref="musicIslandCardRef" class="music-island-card">
-      <button class="music-island-toggle" type="button" :aria-expanded="islandExpanded" @click="toggleIslandExpanded">
+      <button class="music-island-toggle" type="button" :aria-expanded="islandExpanded" @click="handleIslandPrimaryAction">
         <span class="music-island-art">{{ activeTrack?.title?.slice(0, 1) || "M" }}</span>
         <div class="music-island-copy">
           <strong>{{ activeTrack?.title || "Now Playing" }}</strong>
@@ -12,7 +12,7 @@
         </div>
       </button>
       <div class="music-island-panel">
-        <div class="music-island-panel-inner">
+        <div class="music-island-panel-inner" @click="openMusicDetail">
           <p class="kicker">MUSIC ISLAND</p>
           <div class="music-island-head">
             <div>
@@ -35,6 +35,26 @@
       </div>
     </div>
   </div>
+
+  <MusicPlayerDetail
+    :open="detailOpen"
+    :track="activeTrack"
+    :detail="activeTrackDetail"
+    :audio-state="audioState"
+    :current-time-label="currentTimeLabel"
+    :duration-label="durationLabel"
+    :playback-order-label="playbackOrderLabel"
+    :playback-order-hint="playbackOrderHint"
+    :has-multiple-tracks="hasMultipleTracks"
+    :volume-percent="volumePercent"
+    @close="closeMusicDetail"
+    @focus-bay="focusMusicBay"
+    @previous="playPreviousTrack"
+    @toggle-playback="toggleIslandPlayback"
+    @next="playNextTrack"
+    @cycle-order="cyclePlaybackOrder"
+    @volume="handleVolumeInput"
+  />
 
   <section class="nas-grid">
     <article class="nas-card glass-panel">
@@ -254,6 +274,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { requestJson } from "../lib/api.js";
+import MusicPlayerDetail from "./MusicPlayerDetail.vue";
 
 const props = defineProps({ authState: { type: Object, required: true } });
 const emit = defineEmits(["notify", "request-auth"]);
@@ -269,13 +290,16 @@ const musicBayRef = ref(null);
 const musicIslandCardRef = ref(null);
 const dockerDialogOpen = ref(false);
 const islandExpanded = ref(false);
+const detailOpen = ref(false);
+const detailLoading = ref(false);
 const overview = ref(null);
 const transferItems = ref([]);
 const tracks = ref([]);
 const messages = ref([]);
 const activeTrackId = ref("");
+const activeTrackDetail = ref(null);
 const docker = ref({ available: false, locked: true, containers: [], error: "登录后可查看 Docker", engineVersion: "", socketPath: "" });
-const audioState = reactive({ playing: false, currentTime: 0, duration: 0 });
+const audioState = reactive({ playing: false, currentTime: 0, duration: 0, volume: 0.72 });
 const upload = reactive({ active: false, scope: "transfer", fileName: "", percent: 0 });
 const messageForm = reactive({ body: "", sending: false });
 
@@ -311,6 +335,7 @@ const hasMultipleTracks = computed(() => tracks.value.length > 1);
 const audioDurationValue = computed(() => Math.max(0, Number(audioState.duration || activeTrack.value?.duration || 0)));
 const audioRangeValue = computed(() => Math.min(audioDurationValue.value, Math.max(0, Number(audioState.currentTime) || 0)));
 const playerProgressPercent = computed(() => (audioDurationValue.value > 0 ? Math.min(100, (audioRangeValue.value / audioDurationValue.value) * 100) : 0));
+const volumePercent = computed(() => Math.round(Math.min(1, Math.max(0, Number(audioState.volume) || 0)) * 100));
 const islandMeta = computed(() => {
   if (!activeTrack.value) return "暂无曲目信息";
   return `${activeTrack.value.artist || "Unknown Artist"} · ${activeTrack.value.album || "Unknown Album"}`;
@@ -322,6 +347,7 @@ const playbackOrderMeta = computed(() => PLAYBACK_ORDER_OPTIONS.find((item) => i
 const playbackOrderLabel = computed(() => playbackOrderMeta.value.label);
 const playbackOrderGlyph = computed(() => playbackOrderMeta.value.glyph);
 const playbackOrderHint = computed(() => playbackOrderMeta.value.hint);
+let activeDetailRequestToken = 0;
 
 function notify(message, tone = "info") { emit("notify", { message, tone }); }
 function requestAuth(message) { notify(message, "info"); emit("request-auth"); }
@@ -380,6 +406,13 @@ function syncAudioStateFromElement() {
   audioState.playing = !element.paused && !element.ended;
   audioState.currentTime = Number.isFinite(element.currentTime) ? element.currentTime : 0;
   audioState.duration = (Number.isFinite(element.duration) && element.duration > 0 ? element.duration : 0) || Number(activeTrack.value?.duration) || 0;
+  audioState.volume = Number.isFinite(element.volume) ? element.volume : audioState.volume;
+}
+
+function applyAudioPreferences() {
+  const element = audioRef.value;
+  if (!(element instanceof HTMLAudioElement)) return;
+  element.volume = Math.min(1, Math.max(0, Number(audioState.volume) || 0));
 }
 
 function handleAudioPlay() { syncAudioStateFromElement(); }
@@ -391,6 +424,7 @@ function wait(ms) { return new Promise((resolve) => window.setTimeout(resolve, m
 async function playAudioElement({ forceReload = false, retries = 1, suppressError = false } = {}) {
   const element = audioRef.value;
   if (!(element instanceof HTMLAudioElement)) return false;
+  applyAudioPreferences();
 
   let lastError = null;
 
@@ -487,10 +521,96 @@ function handleSeekInput(event) {
   syncAudioStateFromElement();
 }
 
+function handleVolumeInput(event) {
+  const input = event?.target;
+  const element = audioRef.value;
+  if (!(input instanceof HTMLInputElement)) return;
+
+  const nextVolume = Math.min(1, Math.max(0, Number(input.value) / 100));
+  if (!Number.isFinite(nextVolume)) return;
+
+  audioState.volume = nextVolume;
+  if (element instanceof HTMLAudioElement) {
+    element.volume = nextVolume;
+  }
+}
+
+async function loadTrackDetail(trackId, { force = false } = {}) {
+  if (!trackId) {
+    activeTrackDetail.value = null;
+    return null;
+  }
+
+  const requestToken = activeDetailRequestToken + 1;
+  activeDetailRequestToken = requestToken;
+  detailLoading.value = true;
+
+  try {
+    const suffix = force ? "?refresh=1" : "";
+    const payload = await requestJson(`/api/nas/music/tracks/${encodeURIComponent(trackId)}/detail${suffix}`);
+
+    if (activeDetailRequestToken !== requestToken) {
+      return activeTrackDetail.value;
+    }
+
+    activeTrackDetail.value = payload?.detail ?? null;
+    return activeTrackDetail.value;
+  } catch (error) {
+    if (activeDetailRequestToken === requestToken) {
+      activeTrackDetail.value = null;
+    }
+
+    if (detailOpen.value) {
+      notify(error.message || "Failed to load music detail", "error");
+    }
+
+    return null;
+  } finally {
+    if (activeDetailRequestToken === requestToken) {
+      detailLoading.value = false;
+    }
+  }
+}
+
+function openMusicDetail() {
+  if (!activeTrack.value) {
+    return;
+  }
+
+  detailOpen.value = true;
+
+  if (activeTrackId.value && activeTrackDetail.value?.id !== activeTrackId.value) {
+    void loadTrackDetail(activeTrackId.value);
+  }
+}
+
+function closeMusicDetail() {
+  detailOpen.value = false;
+}
+
+function handleIslandPrimaryAction() {
+  if (!activeTrack.value) {
+    return;
+  }
+
+  if (!islandExpanded.value) {
+    islandExpanded.value = true;
+    return;
+  }
+
+  openMusicDetail();
+}
+
 function toggleIslandExpanded() { islandExpanded.value = !islandExpanded.value; }
 function collapseIsland() { islandExpanded.value = false; }
+function handleMusicDetailKeydown(event) {
+  if (event?.key === "Escape") {
+    closeMusicDetail();
+  }
+}
+
 function handleDocumentPointerDown(event) {
-  if (!islandExpanded.value) return;
+  if (!islandExpanded.value || detailOpen.value) return;
   const islandCard = musicIslandCardRef.value;
   const target = event?.target;
   if (!(islandCard instanceof HTMLElement) || !(target instanceof Node)) return;
@@ -509,6 +629,7 @@ async function toggleIslandPlayback() {
 }
 
 function focusMusicBay() {
+  detailOpen.value = false;
   islandExpanded.value = false;
   musicBayRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -600,6 +721,7 @@ async function hydrate(options = {}) {
   }
 
   await nextTick();
+  applyAudioPreferences();
   syncAudioStateFromElement();
   if (autoplay && activeTrackId.value) {
     await playAudioElement({
@@ -613,6 +735,9 @@ async function hydrate(options = {}) {
 async function refreshMusicLibrary() {
   try {
     await hydrate({ preferredTrackId: activeTrackId.value, refreshMusic: true });
+    if (detailOpen.value && activeTrackId.value) {
+      await loadTrackDetail(activeTrackId.value, { force: true });
+    }
     notify("音乐库已刷新", "info");
   } catch (error) {
     notify(error.message || "刷新曲库失败", "error");
@@ -761,6 +886,9 @@ async function deleteTrack(trackId) {
     await requestJson(`/api/nas/music/tracks/${encodeURIComponent(trackId)}`, { method: "DELETE" });
     tracks.value = remainingTracks;
     activeTrackId.value = nextTrackId;
+    if (!nextTrackId) {
+      closeMusicDetail();
+    }
     await nextTick();
     syncAudioStateFromElement();
     notify("歌曲已从音乐库删除", "info");
@@ -792,7 +920,23 @@ async function runDockerAction(containerId, action) {
 }
 
 watch(dockerDialogOpen, (open) => { document.body.classList.toggle("nas-modal-open", open); });
-watch(islandVisible, (visible) => { if (!visible) islandExpanded.value = false; });
+watch(detailOpen, async (open) => {
+  if (typeof document === "undefined") return;
+  document.body.classList.toggle("music-detail-open", open);
+  document.removeEventListener("keydown", handleMusicDetailKeydown);
+  if (!open) return;
+  document.addEventListener("keydown", handleMusicDetailKeydown);
+  await nextTick();
+  if (activeTrackId.value) {
+    await loadTrackDetail(activeTrackId.value);
+  }
+});
+watch(islandVisible, (visible) => {
+  if (!visible) {
+    islandExpanded.value = false;
+    detailOpen.value = false;
+  }
+});
 watch(islandExpanded, async (expanded) => {
   if (typeof document === "undefined") return;
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
@@ -800,7 +944,26 @@ watch(islandExpanded, async (expanded) => {
   await nextTick();
   document.addEventListener("pointerdown", handleDocumentPointerDown);
 });
-watch(() => activeTrackId.value, async () => { await nextTick(); syncAudioStateFromElement(); });
+watch(
+  () => activeTrackId.value,
+  async (trackId) => {
+    await nextTick();
+    applyAudioPreferences();
+    syncAudioStateFromElement();
+
+    if (!trackId) {
+      activeTrackDetail.value = null;
+      detailOpen.value = false;
+      return;
+    }
+
+    if (activeTrackDetail.value?.id !== trackId) {
+      activeTrackDetail.value = null;
+    }
+
+    await loadTrackDetail(trackId);
+  }
+);
 watch(() => props.authState?.authenticated, (authenticated) => {
   if (!authenticated) {
     dockerDialogOpen.value = false;
@@ -810,7 +973,9 @@ watch(() => props.authState?.authenticated, (authenticated) => {
 
 onBeforeUnmount(() => {
   document.body.classList.remove("nas-modal-open");
+  document.body.classList.remove("music-detail-open");
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  document.removeEventListener("keydown", handleMusicDetailKeydown);
 });
 defineExpose({ hydrate });
 </script>

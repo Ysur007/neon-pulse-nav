@@ -427,6 +427,21 @@ app.get("/api/nas/music/tracks", async (request, response) => {
   }
 });
 
+app.get("/api/nas/music/tracks/:trackId/detail", async (request, response) => {
+  try {
+    response.json({
+      detail: await nasBridge.getTrackDetail(request.params.trackId, {
+        force: String(request.query.refresh || "") === "1",
+      }),
+    });
+  } catch (error) {
+    console.error("Failed to get music track detail:", error);
+    response.status(404).json({
+      error: error.message || "Track detail not found",
+    });
+  }
+});
+
 app.delete("/api/nas/music/tracks/:trackId", requireAuth, async (request, response) => {
   try {
     response.json({
@@ -436,6 +451,28 @@ app.delete("/api/nas/music/tracks/:trackId", requireAuth, async (request, respon
     console.error("Failed to delete music track:", error);
     response.status(400).json({
       error: error.message || "Failed to delete music track",
+    });
+  }
+});
+
+app.get("/api/nas/music/artwork/:trackId", async (request, response) => {
+  try {
+    const artwork = await nasBridge.getTrackArtwork(request.params.trackId);
+
+    if (!artwork) {
+      response.status(404).json({
+        error: "Artwork not found",
+      });
+      return;
+    }
+
+    response.setHeader("Content-Type", artwork.mimeType || "image/jpeg");
+    response.setHeader("Cache-Control", "public, max-age=86400");
+    response.setHeader("Content-Length", artwork.buffer.length);
+    response.end(artwork.buffer);
+  } catch (error) {
+    response.status(404).json({
+      error: "Artwork not found",
     });
   }
 });
