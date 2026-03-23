@@ -210,7 +210,7 @@
 
           <div class="spotlight-queue">
             <a
-              v-for="item in visibleSpotlightQueue"
+              v-for="item in (compactViewport ? visibleSpotlightQueue.slice(0, 2) : visibleSpotlightQueue)"
               :key="item.id"
               class="queue-item"
               :href="item.url"
@@ -224,7 +224,7 @@
           </div>
         </article>
 
-        <article class="memo-card glass-panel">
+        <article v-if="!compactViewport" class="memo-card glass-panel">
           <div>
             <p class="kicker">OPS MEMO</p>
             <h3>{{ greeting.heading }}</h3>
@@ -263,8 +263,45 @@
         </article>
       </section>
 
-      <section class="intel-layout">
-        <article class="analytics-card glass-panel">
+      <section v-if="compactViewport" class="mobile-fold-grid">
+        <article class="mobile-fold-card glass-panel">
+          <div class="mobile-fold-head">
+            <div>
+              <p class="kicker">USAGE INTEL</p>
+              <h3>趋势与热门入口</h3>
+            </div>
+            <button class="ghost-button ghost-button-small" type="button" @click="toggleIntelPanel">
+              {{ intelPanelOpen ? "收起" : "展开" }}
+            </button>
+          </div>
+          <div class="mobile-fold-metrics">
+            <article v-for="metric in metricCards.slice(0, 2)" :key="metric.label" class="mobile-fold-metric">
+              <span>{{ metric.label }}</span>
+              <strong>{{ metric.value }}</strong>
+            </article>
+          </div>
+          <p class="mobile-fold-copy">{{ syncSummaryText }}</p>
+        </article>
+
+        <article class="mobile-fold-card glass-panel">
+          <div class="mobile-fold-head">
+            <div>
+              <p class="kicker">CONTROL ROOM</p>
+              <h3>同步与快捷控制</h3>
+            </div>
+            <button class="ghost-button ghost-button-small" type="button" @click="toggleControlPanel">
+              {{ controlPanelOpen ? "收起" : "展开" }}
+            </button>
+          </div>
+          <div class="control-chips mobile-control-chips">
+            <span v-for="chip in visibleControlChips" :key="chip" class="control-chip">{{ chip }}</span>
+          </div>
+          <p class="mobile-fold-copy">{{ controlSummary }}</p>
+        </article>
+      </section>
+
+      <section v-if="!compactViewport || intelPanelOpen || controlPanelOpen" class="intel-layout">
+        <article v-if="!compactViewport || intelPanelOpen" class="analytics-card glass-panel">
           <div class="section-head">
             <div>
               <p class="kicker">USAGE INTEL</p>
@@ -341,7 +378,7 @@
           </div>
         </article>
 
-        <article class="control-card glass-panel">
+        <article v-if="!compactViewport || controlPanelOpen" class="control-card glass-panel">
           <div class="section-head">
             <div>
               <p class="kicker">CONTROL ROOM</p>
@@ -449,6 +486,8 @@
       :open="drawerOpen"
       :draft-profile="draftProfile"
       :data-sync-note="dataSyncNote"
+      :storage-note="drawerStorageNote"
+      :save-label="drawerSaveLabel"
       @close="closeDrawer"
       @save="saveProfile"
       @reset-profile="resetProfileToPreset"
@@ -485,6 +524,7 @@
 </template>
 
 <script setup>
+import { ref } from "vue";
 import AuthPanel from "./components/AuthPanel.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import CustomizeDrawer from "./components/CustomizeDrawer.vue";
@@ -499,6 +539,7 @@ const {
   clockCardStyle,
   clockDateLabel,
   clockPhase,
+  compactViewport,
   controlSummary,
   credentialState,
   credentialForm,
@@ -506,6 +547,8 @@ const {
   dataSyncNote,
   draftProfile,
   drawerOpen,
+  drawerSaveLabel,
+  drawerStorageNote,
   flash,
   formatDateLabel,
   formatNumber,
@@ -573,6 +616,9 @@ const {
   hydrateServerSnapshot,
 } = useDashboardApp();
 
+const intelPanelOpen = ref(false);
+const controlPanelOpen = ref(false);
+
 function setPaletteQuery(value) {
   paletteQuery.value = value;
   paletteIndex.value = 0;
@@ -596,6 +642,14 @@ async function handleLogout() {
 async function handleCredentialUpdate() {
   await updateAuthCredentials();
   await nasDeckRef.value?.hydrate?.();
+}
+
+function toggleIntelPanel() {
+  intelPanelOpen.value = !intelPanelOpen.value;
+}
+
+function toggleControlPanel() {
+  controlPanelOpen.value = !controlPanelOpen.value;
 }
 
 async function resetHistory() {

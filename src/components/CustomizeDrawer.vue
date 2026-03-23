@@ -53,11 +53,11 @@
             <textarea v-model.trim="draftProfile.signature" rows="3" maxlength="120"></textarea>
           </label>
 
-          <div class="drawer-note">这里的数据会直接写入服务器本地文件，多设备访问也能看到同一套工作台信息。</div>
+          <div class="drawer-note">{{ storageNote }}</div>
 
           <div class="drawer-actions">
             <button class="ghost-button" type="button" @click="$emit('reset-profile')">恢复默认资料</button>
-            <button class="pill-button pill-button-primary" type="submit">保存到服务器</button>
+            <button class="pill-button pill-button-primary" type="submit">{{ saveLabel }}</button>
           </div>
         </section>
 
@@ -104,6 +104,14 @@ defineProps({
     required: true,
   },
   dataSyncNote: {
+    type: String,
+    required: true,
+  },
+  storageNote: {
+    type: String,
+    required: true,
+  },
+  saveLabel: {
     type: String,
     required: true,
   },

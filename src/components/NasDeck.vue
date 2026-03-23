@@ -37,14 +37,12 @@
   </div>
 
   <MusicPlayerDetail
+    :key="`${activeTrack?.id || 'empty'}:${activeTrackDetail?.id || 'detail'}:${detailOpen ? 'open' : 'closed'}`"
     :open="detailOpen"
     :track="activeTrack"
     :detail="activeTrackDetail"
     :audio-state="audioState"
-    :current-time-label="currentTimeLabel"
-    :duration-label="durationLabel"
     :playback-order-label="playbackOrderLabel"
-    :playback-order-hint="playbackOrderHint"
     :has-multiple-tracks="hasMultipleTracks"
     :volume-percent="volumePercent"
     @close="closeMusicDetail"
@@ -92,7 +90,7 @@
       </div>
 
       <div class="nas-list is-scrollable">
-        <article v-for="item in transferItems" :key="item.id" class="nas-list-item">
+        <article v-for="item in transferItems" :key="item.id" class="nas-list-item nas-transfer-item">
           <div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ formatTime(item.createdAt) }}</small></div>
           <div class="nas-inline-actions">
             <a class="ghost-button ghost-button-small nas-action-link" :href="item.downloadUrl" target="_blank" rel="noreferrer">下载</a>
@@ -348,6 +346,19 @@ const playbackOrderLabel = computed(() => playbackOrderMeta.value.label);
 const playbackOrderGlyph = computed(() => playbackOrderMeta.value.glyph);
 const playbackOrderHint = computed(() => playbackOrderMeta.value.hint);
 let activeDetailRequestToken = 0;
+let hydrateRetryTimer = 0;
+
+function clearHydrateRetryTimer() {
+  if (!hydrateRetryTimer) return;
+  window.clearTimeout(hydrateRetryTimer);
+  hydrateRetryTimer = 0;
+}
+
+function shouldRetryHydrateResult(result) {
+  if (result?.status !== "rejected") return false;
+  const status = Number(result.reason?.status);
+  return !Number.isFinite(status) || status >= 500;
+}
 
 function notify(message, tone = "info") { emit("notify", { message, tone }); }
 function requestAuth(message) { notify(message, "info"); emit("request-auth"); }
@@ -367,7 +378,7 @@ function formatTime(value) {
 }
 
 function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "--:--";
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const minute = Math.floor(seconds / 60);
   const second = String(seconds % 60).padStart(2, "0");
   return `${minute}:${second}`;
@@ -680,7 +691,7 @@ async function uploadChunk(endpoint, { uploadId, index, chunk }) {
   return response.json();
 }
 
-async function hydrate(options = {}) {
+async function hydrate(options = {}, retryAttempt = 0) {
   const { preferredTrackId = "", autoplay = false, refreshMusic = false } = options;
   const musicTracksUrl = refreshMusic ? "/api/nas/music/tracks?refresh=1" : "/api/nas/music/tracks";
   const requests = [
@@ -723,6 +734,32 @@ async function hydrate(options = {}) {
   await nextTick();
   applyAudioPreferences();
   syncAudioStateFromElement();
+
+  const transientFailureDetected = [
+    overviewResult,
+    transferResult,
+    musicResult,
+    messageResult,
+    dockerResult,
+  ].some(shouldRetryHydrateResult);
+
+  const shouldRetry =
+    retryAttempt < 1 &&
+    transientFailureDetected &&
+    !overview.value &&
+    !transferItems.value.length &&
+    !tracks.value.length &&
+    !messages.value.length;
+
+  if (shouldRetry) {
+    clearHydrateRetryTimer();
+    hydrateRetryTimer = window.setTimeout(() => {
+      void hydrate(options, retryAttempt + 1);
+    }, 1200);
+  } else {
+    clearHydrateRetryTimer();
+  }
+
   if (autoplay && activeTrackId.value) {
     await playAudioElement({
       forceReload: true,
@@ -976,6 +1013,7 @@ onBeforeUnmount(() => {
   document.body.classList.remove("music-detail-open");
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
   document.removeEventListener("keydown", handleMusicDetailKeydown);
+  clearHydrateRetryTimer();
 });
 defineExpose({ hydrate });
 </script>

@@ -18,6 +18,7 @@ import {
 } from "../data/content.js";
 
 const THEME_STORAGE_KEY = "neon-pulse-theme";
+const LOCAL_WORKSPACE_STORAGE_KEY = "neon-pulse-workspace-draft";
 const CATEGORY_ALL = "全部";
 const CATEGORY_PINNED = "已置顶";
 const COMMAND_RESULT_LIMIT = 10;
@@ -292,6 +293,8 @@ export function useDashboardApp() {
   const updatedAt = ref("");
   const coarsePointer = ref(false);
   const compactViewport = ref(false);
+  const localWorkspaceDirty = ref(false);
+  const localWorkspaceDraft = ref(null);
   const fxReady = ref(true);
   const flashTimerId = ref(0);
   const clockTimerId = ref(0);
@@ -559,13 +562,26 @@ export function useDashboardApp() {
       text: "Server offline fallback",
     };
   });
-  const controlSummary = computed(() =>
+  const _legacyControlSummary = computed(() =>
     serverReady.value
       ? `当前工作台数据由服务器本地文件托管，上次写入时间是 ${formatAbsoluteTime(
           statsModel.value.updatedAt || updatedAt.value
         )}。命令面板、备份恢复和点击趋势都共用这份数据源。`
       : "当前使用本地回退状态，服务端恢复连通后会自动拉回完整工作台数据。"
   );
+  const controlSummary = computed(() => {
+    if (!auth.authenticated) {
+      return "未登录时，定制资料和置顶入口只会保存在当前浏览器。登录后会继续沿用这份本地草稿，只有手动保存才会写入服务器。";
+    }
+
+    if (serverReady.value) {
+      return `当前工作台数据由服务器本地文件托管，上次写入时间是 ${formatAbsoluteTime(
+        statsModel.value.updatedAt || updatedAt.value
+      )}。命令面板、备份恢复和点击趋势都共用这份数据源。`;
+    }
+
+    return "当前使用本地回退状态，服务端恢复连通后会自动拉回完整工作台数据。";
+  });
   const controlChips = computed(() => [
     `主题：${activeTheme.value.label}`,
     `置顶入口：${pinnedIds.value.length} 个`,
@@ -606,7 +622,7 @@ export function useDashboardApp() {
 
     return `当前分类为 “${activeCategory.value}”，共 ${visibleLinks.value.length} 个入口`;
   });
-  const dataSyncNote = computed(() => {
+  const _legacyDataSyncNote = computed(() => {
     if (flash.message) {
       return `${flash.message} · ${formatAbsoluteTime(statsModel.value.updatedAt || updatedAt.value)}`;
     }
@@ -619,6 +635,33 @@ export function useDashboardApp() {
 
     return "当前未拿到服务端快照，导出、导入和清理操作会在服务端恢复后更可靠。";
   });
+  const dataSyncNote = computed(() => {
+    if (!auth.authenticated) {
+      return "未登录时，个人资料、置顶入口等定制内容只保存在当前浏览器。登录后会继续使用这份本地草稿，需要你手动保存才会同步到服务器。";
+    }
+
+    if (localWorkspaceDirty.value) {
+      return "当前存在未同步的本地定制修改，你可以继续编辑，或手动保存将其写入服务器。";
+    }
+
+    if (flash.message) {
+      return `${flash.message} 路 ${formatAbsoluteTime(statsModel.value.updatedAt || updatedAt.value)}`;
+    }
+
+    if (serverReady.value) {
+      return `服务端数据已在线，最近同步时间 ${formatAbsoluteTime(
+        statsModel.value.updatedAt || updatedAt.value
+      )}。导出会包含资料、置顶入口和历史点击记录。`;
+    }
+
+    return "当前未拿到服务端快照，导出、导入和清理操作会在服务端恢复后更可靠。";
+  });
+  const drawerStorageNote = computed(() =>
+    auth.authenticated
+      ? "这里的资料会写入服务器本地文件，多设备访问也能看到同一套工作台信息。"
+      : "未登录时，这里的修改只保存在当前浏览器。登录后会保留这份本地草稿，需要手动保存才会上传服务器。"
+  );
+  const drawerSaveLabel = computed(() => (auth.authenticated ? "保存到服务器" : "保存到当前浏览器"));
   const paletteEntries = computed(() => {
     const keyword = normalizedPaletteQuery.value.toLowerCase();
     const commandEntries = [
@@ -760,6 +803,58 @@ export function useDashboardApp() {
     flash.tone = "info";
   }
 
+  function createWorkspaceDraftPayload({ dirty = localWorkspaceDirty.value } = {}) {
+    return {
+      dirty: Boolean(dirty),
+      profile: sanitizeProfile(profile),
+      pinnedIds: [...new Set(pinnedIds.value)].filter((id) => linkById.has(id)).slice(0, 8),
+    };
+  }
+
+  function persistLocalWorkspaceDraft({ dirty = localWorkspaceDirty.value } = {}) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const payload = createWorkspaceDraftPayload({ dirty });
+    localWorkspaceDirty.value = payload.dirty;
+    localWorkspaceDraft.value = payload;
+    window.localStorage.setItem(LOCAL_WORKSPACE_STORAGE_KEY, JSON.stringify(payload));
+  }
+
+  function hydrateLocalWorkspaceDraft() {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(LOCAL_WORKSPACE_STORAGE_KEY);
+      if (!raw) {
+        localWorkspaceDraft.value = null;
+        localWorkspaceDirty.value = false;
+        return;
+      }
+
+      const payload = JSON.parse(raw);
+      const nextDraft = {
+        dirty: Boolean(payload?.dirty),
+        profile: sanitizeProfile(payload?.profile ?? {}),
+        pinnedIds: Array.isArray(payload?.pinnedIds)
+          ? [...new Set(payload.pinnedIds)].filter((id) => linkById.has(id)).slice(0, 8)
+          : [],
+      };
+
+      localWorkspaceDraft.value = nextDraft;
+      localWorkspaceDirty.value = nextDraft.dirty;
+      mergeWorkspacePayload(nextDraft);
+    } catch (error) {
+      localWorkspaceDraft.value = null;
+      localWorkspaceDirty.value = false;
+      window.localStorage.removeItem(LOCAL_WORKSPACE_STORAGE_KEY);
+      console.error("Failed to restore local workspace draft:", error);
+    }
+  }
+
   function mergeWorkspacePayload(payload = {}) {
     Object.assign(profile, sanitizeProfile(payload.profile ?? profile));
     pinnedIds.value = Array.isArray(payload.pinnedIds)
@@ -840,6 +935,7 @@ export function useDashboardApp() {
     setFlash(`已登录为 ${auth.username}`, "info");
     loginForm.password = "";
     syncCredentialForm();
+    await hydrateServerSnapshot(false);
     await nasDeckRef.value?.hydrate();
     closeAuthPanel();
   }
@@ -896,6 +992,10 @@ export function useDashboardApp() {
       ]);
 
       mergeWorkspacePayload(workspacePayload);
+      if (localWorkspaceDirty.value && localWorkspaceDraft.value) {
+        mergeWorkspacePayload(localWorkspaceDraft.value);
+      }
+      syncDraftProfile();
       mergeStatsPayload(statsPayload);
       serverReady.value = true;
 
@@ -919,6 +1019,8 @@ export function useDashboardApp() {
     });
 
     mergeWorkspacePayload(payload);
+    persistLocalWorkspaceDraft({ dirty: false });
+    syncDraftProfile();
     serverReady.value = true;
     setFlash("工作台已写入服务器", "info");
   }
@@ -942,6 +1044,12 @@ export function useDashboardApp() {
       ? pinnedIds.value.filter((itemId) => itemId !== id)
       : [id, ...pinnedIds.value].slice(0, 8);
 
+    if (!auth.authenticated) {
+      persistLocalWorkspaceDraft({ dirty: true });
+      setFlash("未登录，置顶入口已保存到当前浏览器", "info");
+      return;
+    }
+
     try {
       await pushWorkspaceToServer();
     } catch (error) {
@@ -955,6 +1063,14 @@ export function useDashboardApp() {
   async function saveProfile() {
     const previous = { ...profile };
     Object.assign(profile, sanitizeProfile(draftProfile));
+
+    if (!auth.authenticated) {
+      persistLocalWorkspaceDraft({ dirty: true });
+      syncDraftProfile();
+      closeDrawer();
+      setFlash("未登录，资料已保存到当前浏览器", "info");
+      return;
+    }
 
     try {
       await pushWorkspaceToServer();
@@ -971,6 +1087,12 @@ export function useDashboardApp() {
     const previous = { ...profile };
     Object.assign(profile, { ...profilePreset });
     syncDraftProfile();
+
+    if (!auth.authenticated) {
+      persistLocalWorkspaceDraft({ dirty: true });
+      setFlash("未登录，已恢复浏览器中的默认资料", "info");
+      return;
+    }
 
     try {
       await pushWorkspaceToServer();
@@ -1248,11 +1370,12 @@ export function useDashboardApp() {
 
   function handleTrendWheel(event) {
     const container = trendBarsRef.value;
-    if (!(container instanceof HTMLElement)) {
+    if (!(container instanceof HTMLElement) || compactViewport.value || coarsePointer.value) {
       return;
     }
 
     if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      event.preventDefault();
       container.scrollLeft += event.deltaY;
     }
   }
@@ -1375,6 +1498,7 @@ export function useDashboardApp() {
     const nextThemeIndex = themes.findIndex((item) => item.key === savedTheme);
     themeIndex.value = nextThemeIndex >= 0 ? nextThemeIndex : 0;
     currentFocusLine.value = focusLines[Math.floor(Math.random() * focusLines.length)];
+    hydrateLocalWorkspaceDraft();
     syncDraftProfile();
 
     document.addEventListener("keydown", onDocumentKeydown);
@@ -1432,6 +1556,8 @@ export function useDashboardApp() {
     compactViewport,
     controlChips,
     controlSummary,
+    drawerSaveLabel,
+    drawerStorageNote,
     credentialState,
     credentialForm,
     currentFocusLine,

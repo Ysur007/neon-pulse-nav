@@ -5469,7 +5469,105 @@ body.music-detail-open .music-island-shell {
     order: 1;
   }
 
-  .music-detail-copy {
+.music-detail-copy {
     order: 2;
+  }
+}
+
+.mobile-fold-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.mobile-fold-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.mobile-fold-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mobile-fold-head h3 {
+  margin: 6px 0 0;
+  font-size: 1.04rem;
+}
+
+.mobile-fold-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mobile-fold-metric {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mobile-fold-metric span,
+.mobile-fold-copy {
+  color: var(--muted);
+}
+
+.mobile-fold-metric strong {
+  font-size: 1.15rem;
+}
+
+.mobile-control-chips {
+  gap: 8px;
+}
+
+.trend-bars {
+  overscroll-behavior-x: contain;
+}
+
+.nas-transfer-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px 18px;
+}
+
+.nas-transfer-item > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.nas-transfer-item > div:first-child strong,
+.nas-transfer-item > div:first-child small {
+  display: block;
+  min-width: 0;
+}
+
+.nas-transfer-item > div:first-child strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nas-transfer-item > .nas-inline-actions {
+  justify-self: end;
+  align-self: center;
+}
+
+@media (max-width: 760px) {
+  .nas-transfer-item {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .nas-transfer-item > .nas-inline-actions {
+    justify-self: stretch;
+    justify-content: flex-start;
+    padding-top: 4px;
   }
 }
